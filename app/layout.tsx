@@ -55,6 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <HeaderNav />
         <main className="container main">{children}</main>
+        <Analytics />
         <Footer />
       </body>
     </html>
