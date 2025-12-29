@@ -39,3 +39,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local data / generated outputs (do not commit)
+data/
+output/
+output/**
+
+# Common Next.js / Node ignores (recommended)
+node_modules/
+.next/
+out/
+*.log
+.env*
+.DS_Store
+
