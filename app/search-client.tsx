@@ -1,241 +1,266 @@
-// app/search-client.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import SearchForm, { SearchValues } from "./components/SearchForm";
-import { supabase } from "../lib/supabaseBrowser";
+
+type SearchForm = {
+  employer: string;
+  job: string;
+  city: string;
+  state: string;
+  year: string; // "" means Any
+};
+
+const DEFAULT_FORM: SearchForm = {
+  employer: "",
+  job: "",
+  city: "",
+  state: "",
+  year: "",
+};
 
 const LIMIT = 50;
 
-type LcaRow = {
-  employer_name: string | null;
-  job_title: string | null;
-  worksite_city: string | null;
-  worksite_state: string | null;
-  year: number | null;
-  wage_annual: number | null;
-  case_status: string | null;
-};
-
-function toIntOrNull(s: string): number | null {
-  const trimmed = s.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
-  return Number.isFinite(n) ? Math.trunc(n) : null;
-}
-
-function toNumberOrNull(s: string): number | null {
-  const trimmed = s.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
-  return Number.isFinite(n) ? n : null;
-}
+// Year dropdown options (dynamic): 2020 -> current year, descending
+const YEAR_MIN = 2020;
+const YEAR_MAX = new Date().getFullYear();
+const YEAR_OPTIONS: string[] = [
+  "", // Any year
+  ...Array.from({ length: YEAR_MAX - YEAR_MIN + 1 }, (_, i) => String(YEAR_MAX - i)),
+];
 
 export default function SearchClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
+  const params = useSearchParams();
 
-  // URL -> state (source of truth on load / back-forward)
-  const urlValues: SearchValues = useMemo(() => {
-    return {
-      employer: searchParams.get("em") ?? "",
-      job: searchParams.get("job") ?? "",
-      city: searchParams.get("city") ?? "",
-      state: searchParams.get("state") ?? "",
-      year: searchParams.get("year") ?? "",
-      minWage: searchParams.get("min") ?? "",
-      maxWage: searchParams.get("max") ?? "",
-      status: searchParams.get("status") ?? "",
-    };
-  }, [searchParams]);
+  const [draft, setDraft] = useState<SearchForm>(DEFAULT_FORM);
+  const [applied, setApplied] = useState<SearchForm>(DEFAULT_FORM);
 
-  const urlPage = useMemo(() => {
-    const p = Number(searchParams.get("page") ?? "0");
-    return Number.isFinite(p) && p > 0 ? Math.trunc(p) : 0;
-  }, [searchParams]);
-
-  const [values, setValues] = useState<SearchValues>(urlValues);
-  const [page, setPage] = useState<number>(urlPage);
-
-  const [rows, setRows] = useState<LcaRow[]>([]);
+  const [page, setPage] = useState<number>(0);
+  const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // Keep state synced when URL changes (e.g., user pastes a link, uses back/forward)
+  // Initialize from URL once on load
   useEffect(() => {
-    setValues(urlValues);
-    setPage(urlPage);
-  }, [urlValues, urlPage]);
+    const initial: SearchForm = {
+      employer: params.get("em") ?? "",
+      job: params.get("job") ?? "",
+      city: params.get("city") ?? "",
+      state: params.get("state") ?? "",
+      year: params.get("year") ?? "",
+    };
 
-  // When user edits filters, reset pagination to page 0
-  function handleValuesChange(next: SearchValues) {
-    setValues(next);
-    setPage(0);
+    const initialPage = Number(params.get("page") ?? "0");
+    const safePage = Number.isFinite(initialPage) && initialPage >= 0 ? initialPage : 0;
+
+    setDraft(initial);
+    setApplied(initial);
+    setPage(safePage);
+
+    const hasAny = Object.values(initial).some((v) => v.trim() !== "");
+    if (hasAny) void runSearch(initial, safePage);
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function updateUrl(nextApplied: SearchForm, nextPage: number) {
+    const sp = new URLSearchParams();
+
+    if (nextApplied.employer) sp.set("em", nextApplied.employer);
+    if (nextApplied.job) sp.set("job", nextApplied.job);
+    if (nextApplied.city) sp.set("city", nextApplied.city);
+    if (nextApplied.state) sp.set("state", nextApplied.state);
+    if (nextApplied.year) sp.set("year", nextApplied.year);
+
+    sp.set("page", String(nextPage));
+    router.replace(`/?${sp.toString()}`);
   }
 
-  // Debounced fetch + URL update
-  const debounceTimerRef = useRef<number | null>(null);
+  async function runSearch(criteria: SearchForm, nextPage: number) {
+    setLoading(true);
+    setErrorMsg("");
 
-  useEffect(() => {
-    if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
-
-    debounceTimerRef.current = window.setTimeout(async () => {
-      // 1) Update URL query params (shareable link)
-      const params = new URLSearchParams();
-
-      if (values.employer.trim()) params.set("em", values.employer.trim());
-      if (values.job.trim()) params.set("job", values.job.trim());
-      if (values.city.trim()) params.set("city", values.city.trim());
-      if (values.state.trim()) params.set("state", values.state.trim());
-      if (values.year.trim()) params.set("year", values.year.trim());
-      if (values.minWage.trim()) params.set("min", values.minWage.trim());
-      if (values.maxWage.trim()) params.set("max", values.maxWage.trim());
-      if (values.status.trim()) params.set("status", values.status.trim());
-      if (page > 0) params.set("page", String(page));
-
-      const nextQueryString = params.toString();
-      const currentQueryString =
-        window.location.search.replace(/^\?/, "");
-
-      if (nextQueryString !== currentQueryString) {
-        router.replace(nextQueryString ? `/?${nextQueryString}` : "/", { scroll: false });
-      }
-
-      // 2) Call Supabase RPC
-      setLoading(true);
-      setErrorMsg(null);
-
-      const offset = page * LIMIT;
-
-      const { data, error } = await supabase.rpc("search_lca_cases_fields", {
-        p_employer: values.employer.trim() || null,
-        p_job: values.job.trim() || null,
-        p_city: values.city.trim() || null,
-        p_state: values.state.trim() || null,
-        p_year: toIntOrNull(values.year),
-        p_status: values.status.trim() || null,
-        p_min_wage: toNumberOrNull(values.minWage),
-        p_max_wage: toNumberOrNull(values.maxWage),
-        p_limit: LIMIT,
-        p_offset: offset,
+    try {
+      const res = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employer: criteria.employer,
+          job: criteria.job,
+          city: criteria.city,
+          state: criteria.state,
+          year: criteria.year, // "" or "2025"
+          page: nextPage,
+          limit: LIMIT,
+        }),
       });
 
-      if (error) {
+      let json: { rows?: any[]; error?: string } = {};
+      try {
+        json = await res.json();
+      } catch {
+        // ignore
+      }
+
+      if (!res.ok) {
         setRows([]);
-        setErrorMsg(error.message || "Search failed. Please try again.");
-        setLoading(false);
+        setErrorMsg(json.error ?? `Search failed (HTTP ${res.status})`);
         return;
       }
 
-      setRows((data ?? []) as LcaRow[]);
+      setRows(json.rows ?? []);
+    } catch (e: any) {
+      setRows([]);
+      setErrorMsg(e?.message ?? "Network error");
+    } finally {
       setLoading(false);
-    }, 300);
+    }
+  }
 
-    return () => {
-      if (debounceTimerRef.current) window.clearTimeout(debounceTimerRef.current);
+  function onChange<K extends keyof SearchForm>(key: K, val: string) {
+    setDraft((prev) => ({ ...prev, [key]: val }));
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    const nextApplied: SearchForm = {
+      ...draft,
+      state: draft.state.trim().toUpperCase(),
     };
-  }, [values, page, router]);
+    const nextPage = 0;
 
-  const canPrev = page > 0;
-  const canNext = rows.length === LIMIT;
+    setApplied(nextApplied);
+    setPage(nextPage);
+    updateUrl(nextApplied, nextPage);
+    await runSearch(nextApplied, nextPage);
+  }
+
+  async function goPrev() {
+    const nextPage = Math.max(0, page - 1);
+    setPage(nextPage);
+    updateUrl(applied, nextPage);
+    await runSearch(applied, nextPage);
+  }
+
+  async function goNext() {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    updateUrl(applied, nextPage);
+    await runSearch(applied, nextPage);
+  }
+
+  function clearAll() {
+    setDraft(DEFAULT_FORM);
+    setApplied(DEFAULT_FORM);
+    setPage(0);
+    setRows([]);
+    setErrorMsg("");
+    router.replace("/");
+  }
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(applied);
 
   return (
-    <main style={{ padding: 16, fontFamily: "system-ui, Arial, sans-serif" }}>
-      <h1 style={{ marginBottom: 8 }}>LCA Case Search</h1>
-      <p style={{ marginTop: 0, color: "#555" }}>
-        Multi-field search calling your Supabase RPC <code>search_lca_cases_fields</code>.
-      </p>
+    <main style={{ padding: 16 }}>
+      <h1>LCA Search</h1>
 
-      <SearchForm values={values} onChange={handleValuesChange} disabled={loading} />
-
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={!canPrev || loading}>
-          Prev
-        </button>
-        <button onClick={() => setPage((p) => p + 1)} disabled={!canNext || loading}>
-          Next
-        </button>
-
-        <span style={{ marginLeft: 8, color: "#555" }}>
-          Page: {page} {loading ? "(Loading…)" : ""}
-        </span>
-      </div>
-
-      {errorMsg && (
+      {/* All inputs in ONE row */}
+      <form onSubmit={onSubmit} style={{ display: "grid", gap: 8, maxWidth: 1100 }}>
         <div
           style={{
-            padding: 12,
-            border: "1px solid #f5c2c7",
-            background: "#f8d7da",
-            borderRadius: 8,
-            marginBottom: 12,
+            display: "grid",
+            gridTemplateColumns: "1.4fr 1.4fr 1.1fr 110px 140px auto",
+            gap: 8,
+            alignItems: "center",
           }}
         >
-          <strong>Search error:</strong> {errorMsg}
-        </div>
-      )}
+          <input
+            value={draft.employer}
+            onChange={(e) => onChange("employer", e.target.value)}
+            placeholder="Employer"
+          />
 
-      {!errorMsg && !loading && rows.length === 0 && (
-        <div style={{ padding: 12, border: "1px solid #ddd", borderRadius: 8 }}>
-          No results found. Try broadening your filters.
-        </div>
-      )}
+          <input
+            value={draft.job}
+            onChange={(e) => onChange("job", e.target.value)}
+            placeholder="Job Title"
+          />
 
-      {rows.length > 0 && (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                {["Employer", "Job", "City", "State", "Year", "Wage", "Status"].map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      textAlign: "left",
-                      borderBottom: "2px solid #ddd",
-                      padding: "8px 6px",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, idx) => (
-                <tr key={idx}>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.employer_name ?? ""}
-                  </td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.job_title ?? ""}
-                  </td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.worksite_city ?? ""}
-                  </td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.worksite_state ?? ""}
-                  </td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.year ?? ""}
-                  </td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.wage_annual != null ? r.wage_annual.toLocaleString() : ""}
-                  </td>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                    {r.case_status ?? ""}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <input
+            value={draft.city}
+            onChange={(e) => onChange("city", e.target.value)}
+            placeholder="City"
+          />
 
-          <div style={{ marginTop: 10, color: "#555" }}>
-            Showing {rows.length} row(s). {canNext ? "More pages available." : "End of results."}
+          <input
+            value={draft.state}
+            onChange={(e) => onChange("state", e.target.value)}
+            placeholder="State"
+            maxLength={2}
+          />
+
+          <select
+            value={draft.year}
+            onChange={(e) => onChange("year", e.target.value)}
+            style={{ height: 30 }}
+          >
+            {YEAR_OPTIONS.map((y) => (
+              <option key={y || "any"} value={y}>
+                {y ? y : "Any year"}
+              </option>
+            ))}
+          </select>
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button type="submit" disabled={loading}>
+              {loading ? "Searching..." : "Search"}
+            </button>
+            <button type="button" onClick={clearAll} disabled={loading}>
+              Clear
+            </button>
+            {dirty && <span style={{ alignSelf: "center" }}>(Not searched yet)</span>}
           </div>
         </div>
-      )}
+      </form>
+
+      {errorMsg && <p style={{ color: "crimson" }}>Search error: {errorMsg}</p>}
+
+      <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
+        <button onClick={goPrev} disabled={loading || page === 0}>
+          Prev
+        </button>
+        <button onClick={goNext} disabled={loading || rows.length < LIMIT}>
+          Next
+        </button>
+        <span style={{ alignSelf: "center" }}>Page: {page + 1}</span>
+      </div>
+
+      <table style={{ width: "100%", marginTop: 16, borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th align="left">Employer</th>
+            <th align="left">Job</th>
+            <th align="left">City</th>
+            <th align="left">State</th>
+            <th align="right">Year</th>
+            <th align="right">Wage</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.case_number}>
+              <td>{r.employer_name}</td>
+              <td>{r.job_title}</td>
+              <td>{r.worksite_city}</td>
+              <td>{r.worksite_state}</td>
+              <td align="right">{r.year}</td>
+              <td align="right">{r.wage_annual}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </main>
   );
 }
