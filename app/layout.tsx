@@ -4,7 +4,7 @@ import "./globals.css";
 import { Analytics } from "@vercel/analytics/next"
 
 export const metadata: Metadata = {
-  title: "LCA Wage Search",
+  title: "H1B Wage Search",
   description: "Search and explore U.S. Department of Labor H-1B LCA disclosure wage data.",
 };
 
