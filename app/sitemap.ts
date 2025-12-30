@@ -8,20 +8,22 @@ export const revalidate = 86400; // regenerate daily
 const INDEX_MIN_CASES = 500;
 
 function getBaseUrl() {
-  // Recommended: set NEXT_PUBLIC_SITE_URL to your canonical origin, e.g. https://h1bgrader.com
-  const explicit =
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.SITE_URL;
+  const canonical = process.env.NEXT_PUBLIC_SITE_URL;
+  if (canonical) return canonical.replace(/\/+$/, "");
 
-  if (explicit) return explicit.replace(/\/+$/, "");
+  // Hard fail so you don't accidentally publish vercel.app URLs in production
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Missing NEXT_PUBLIC_SITE_URL in production. Set it to https://yourdomain.com"
+    );
+  }
 
-  // Vercel fallback (no protocol in VERCEL_URL)
   const vercel = process.env.VERCEL_URL;
   if (vercel) return `https://${vercel}`.replace(/\/+$/, "");
 
-  // Local dev fallback
   return "http://localhost:3000";
 }
+
 
 const STATIC_PATHS = ["/", "/about", "/methodology", "/privacy", "/terms", "/contact"] as const;
 
