@@ -25,7 +25,7 @@ function getBaseUrl() {
 }
 
 
-const STATIC_PATHS = ["/", "/about", "/methodology", "/privacy", "/terms", "/contact"] as const;
+const STATIC_PATHS = ["/", "/salary", "/about", "/methodology", "/privacy", "/terms", "/contact"] as const;
 
 const ALL_50_STATES = [
   "al","ak","az","ar","ca","co","ct","de","fl","ga",

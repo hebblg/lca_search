@@ -3,10 +3,25 @@ import Link from "next/link";
 import "./globals.css";
 import { Analytics } from "@vercel/analytics/next"
 
+// app/layout.tsx
+import SiteHeader from "@/components/SiteHeader";
+
 export const metadata: Metadata = {
-  title: "H1B Wage Search",
-  description: "Search and explore U.S. Department of Labor H-1B LCA disclosure wage data.",
+  title: "H-1B LCA Wages",
+  description: "Search and explore public H-1B LCA wage disclosure data.",
 };
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body style={{ margin: 0, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" }}>
+        <SiteHeader />
+        {children}
+      </body>
+    </html>
+  );
+}
+
 
 function HeaderNav() {
   return (
@@ -49,15 +64,4 @@ function Footer() {
   );
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en">
-      <body>
-        <HeaderNav />
-        <main className="container main">{children}</main>
-        <Analytics />
-        <Footer />
-      </body>
-    </html>
-  );
-}
+

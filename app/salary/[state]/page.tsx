@@ -82,9 +82,6 @@ function normalizeYearSeries(raw: unknown): YearPoint[] {
     .filter((p) => Number.isFinite(p.year) && p.year > 0)
     .sort((a, b) => a.year - b.year);
 
-  // keep only last 10 years if you want a compact chart:
-  // return pts.slice(Math.max(0, pts.length - 10));
-
   return pts;
 }
 
@@ -286,9 +283,19 @@ export default async function Page({
   const totalCases = asNumber(summary.total_cases);
   const yearSeries = normalizeYearSeries(summary.year_series);
 
+  const topCity = cities?.[0]?.city;
+  const topEmployer = employers?.[0]?.employer_name;
+  const topJob = jobs?.[0]?.job_title;
+
   return (
     <main style={{ maxWidth: 1160, margin: "0 auto", padding: "26px 16px" }}>
       <header style={{ marginBottom: 18 }}>
+        <div style={{ marginBottom: 10 }}>
+          <Link href="/salary" style={{ textDecoration: "none" }}>
+            ← All states
+          </Link>
+        </div>
+
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 750, margin: "0 0 8px 0" }}>
@@ -301,8 +308,7 @@ export default async function Page({
                   {" "}
                   · Latest year: <strong>{summary.latest_year}</strong>
                 </>
-              ) : null}
-              {" "}
+              ) : null}{" "}
               · Updated: <strong>{formatDate(summary.refreshed_at)}</strong>
             </p>
             <p style={{ margin: "10px 0 0 0", lineHeight: 1.6 }}>
@@ -337,6 +343,94 @@ export default async function Page({
           </div>
         ) : null}
       </header>
+
+      {/* ✅ Quality block (unique per state, improves indexability) */}
+      <section
+        style={{
+          margin: "0 0 22px 0",
+          border: "1px solid rgba(0,0,0,0.1)",
+          borderRadius: 12,
+          padding: 16,
+          background: "rgba(0,0,0,0.02)",
+          lineHeight: 1.65,
+        }}
+      >
+        <h2 style={{ fontSize: 16, fontWeight: 800, margin: "0 0 8px 0" }}>
+          {stateUpper} wage snapshot
+        </h2>
+
+        <p style={{ margin: 0 }}>
+          {summary.latest_year ? (
+            <>
+              In <strong>{stateUpper}</strong>, the <strong>median annual wage</strong> in{" "}
+              <strong>{summary.latest_year}</strong> was <strong>{formatUSD(summary.wage_p50)}</strong>
+              {asNumber(summary.wage_n_latest_year) > 0 ? (
+                <>
+                  {" "}
+                  based on <strong>{formatInt(summary.wage_n_latest_year)}</strong> wage observations (wage_annual &gt;
+                  0)
+                </>
+              ) : null}
+              . The middle 50% of wages ranged from <strong>{formatUSD(summary.wage_p25)}</strong> (P25) to{" "}
+              <strong>{formatUSD(summary.wage_p75)}</strong> (P75), and P90 was{" "}
+              <strong>{formatUSD(summary.wage_p90)}</strong>.
+            </>
+          ) : (
+            <>
+              In <strong>{stateUpper}</strong>, this page summarizes public H-1B LCA wage disclosure records.
+            </>
+          )}
+        </p>
+
+        <p style={{ margin: "10px 0 0 0" }}>
+          This state hub aggregates <strong>{formatInt(summary.total_cases)}</strong> total cases across all years. Use
+          the links below to drill into raw filings.
+        </p>
+
+        <ul style={{ margin: "10px 0 0 18px", padding: 0 }}>
+          <li>
+            <Link href={`/?state=${encodeURIComponent(stateUpper)}`} style={{ fontWeight: 700 }}>
+              Search all records in {stateUpper}
+            </Link>
+          </li>
+
+          {topCity ? (
+            <li>
+              Top city:{" "}
+              <Link href={`/?state=${encodeURIComponent(stateUpper)}&city=${encodeURIComponent(String(topCity))}`}>
+                {String(topCity)}
+              </Link>
+            </li>
+          ) : null}
+
+          {topEmployer ? (
+            <li>
+              Top employer:{" "}
+              <Link href={`/?state=${encodeURIComponent(stateUpper)}&em=${encodeURIComponent(String(topEmployer))}`}>
+                {String(topEmployer)}
+              </Link>
+            </li>
+          ) : null}
+
+          {topJob ? (
+            <li>
+              Top job title:{" "}
+              <Link href={`/?state=${encodeURIComponent(stateUpper)}&job=${encodeURIComponent(String(topJob))}`}>
+                {String(topJob)}
+              </Link>
+            </li>
+          ) : null}
+
+          <li>
+            How this is computed: <Link href="/methodology">Methodology</Link>
+          </li>
+        </ul>
+
+        <p style={{ margin: "10px 0 0 0", fontSize: 13, opacity: 0.85 }}>
+          Note: LCA filings do not necessarily indicate visa approval. Wage fields may be missing or inconsistent due to
+          source reporting and cleaning.
+        </p>
+      </section>
 
       {/* Trends / plots */}
       <section style={{ marginBottom: 22 }}>
@@ -528,18 +622,10 @@ function BarChartSVG({
   const scaleY = (v: number) => pad.t + innerH - (v / maxY) * innerH;
 
   return (
-    <svg
-      width="100%"
-      viewBox={`0 0 ${W} ${H}`}
-      role="img"
-      aria-label={ariaLabel}
-      style={{ display: "block" }}
-    >
-      {/* axes */}
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={ariaLabel} style={{ display: "block" }}>
       <line x1={pad.l} y1={pad.t} x2={pad.l} y2={H - pad.b} stroke="rgba(0,0,0,0.25)" />
       <line x1={pad.l} y1={H - pad.b} x2={W - pad.r} y2={H - pad.b} stroke="rgba(0,0,0,0.25)" />
 
-      {/* bars */}
       {data.map((d, i) => {
         const x0 = pad.l + i * barW + barW * 0.12;
         const x1 = pad.l + (i + 1) * barW - barW * 0.12;
@@ -555,7 +641,6 @@ function BarChartSVG({
               fill="rgba(0,0,0,0.18)"
               stroke="rgba(0,0,0,0.25)"
             />
-            {/* x labels (every year, but you can thin if needed) */}
             <text
               x={pad.l + i * barW + barW / 2}
               y={H - 10}
@@ -569,7 +654,6 @@ function BarChartSVG({
         );
       })}
 
-      {/* y max label */}
       <text x={pad.l} y={pad.t + 10} fontSize="11" fill="rgba(0,0,0,0.7)" textAnchor="start">
         {formatInt(maxY)}
       </text>
@@ -596,7 +680,6 @@ function WageBandChartSVG({
   const minW = Math.min(...wagesAll);
   const maxW = Math.max(...wagesAll);
 
-  // padding on y-range
   const yMin = Math.max(0, minW * 0.9);
   const yMax = Math.max(yMin + 1, maxW * 1.1);
 
@@ -629,18 +712,10 @@ function WageBandChartSVG({
   };
 
   return (
-    <svg
-      width="100%"
-      viewBox={`0 0 ${W} ${H}`}
-      role="img"
-      aria-label={ariaLabel}
-      style={{ display: "block" }}
-    >
-      {/* axes */}
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={ariaLabel} style={{ display: "block" }}>
       <line x1={pad.l} y1={pad.t} x2={pad.l} y2={H - pad.b} stroke="rgba(0,0,0,0.25)" />
       <line x1={pad.l} y1={H - pad.b} x2={W - pad.r} y2={H - pad.b} stroke="rgba(0,0,0,0.25)" />
 
-      {/* y labels */}
       <text x={pad.l - 6} y={pad.t + 10} textAnchor="end" fontSize="11" fill="rgba(0,0,0,0.75)">
         {formatUSD(yMax)}
       </text>
@@ -648,7 +723,6 @@ function WageBandChartSVG({
         {formatUSD(yMin)}
       </text>
 
-      {/* x labels (min/max year) */}
       <text x={pad.l} y={H - 10} textAnchor="start" fontSize="11" fill="rgba(0,0,0,0.75)">
         {minYear}
       </text>
@@ -656,13 +730,9 @@ function WageBandChartSVG({
         {maxYear}
       </text>
 
-      {/* band P25-P75 */}
       <path d={bandPath()} fill="rgba(0,0,0,0.10)" stroke="none" />
-
-      {/* median line */}
       <path d={linePath(p50)} fill="none" stroke="rgba(0,0,0,0.65)" strokeWidth="2" />
 
-      {/* points */}
       {p50.map(([x, y], i) => (
         <circle key={i} cx={x} cy={y} r="2.6" fill="rgba(0,0,0,0.65)" />
       ))}
