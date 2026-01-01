@@ -11,6 +11,7 @@ export const revalidate = 86400;
 
 const TOP_N = 25;
 const SITE_URL = "https://www.h1bdata.fyi";
+const SEARCH_YEAR = 2025; // ✅ all Search links will be filtered to this year
 
 /** US state/territory name map (SEO: use full names in titles/snippets). */
 const STATE_NAME: Record<string, string> = {
@@ -67,6 +68,15 @@ const STATE_NAME: Record<string, string> = {
   DC: "District of Columbia",
 };
 
+// Helper to get nearby/related states for internal linking
+const NEARBY_STATES: Record<string, string[]> = {
+  TX: ["LA", "AR", "OK", "NM"],
+  CA: ["NV", "OR", "AZ"],
+  NY: ["NJ", "CT", "PA", "MA"],
+  FL: ["GA", "AL"],
+  IL: ["IN", "WI", "IA", "MO"],
+};
+
 function isValidStateSlug(s: string) {
   return /^[a-zA-Z]{2}$/.test(s);
 }
@@ -79,6 +89,20 @@ function toLowerState(s: string) {
 function getStateName(stateUpper: string) {
   return STATE_NAME[stateUpper] ?? stateUpper;
 }
+function getNearbyStates(stateUpper: string): string[] {
+  return NEARBY_STATES[stateUpper] ?? [];
+}
+
+function titleCaseSimple(s: string) {
+  return String(s ?? "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+
 
 function asNumber(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -93,7 +117,7 @@ function formatInt(v: unknown) {
 }
 function formatUSD(v: unknown) {
   const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN;
-  if (!Number.isFinite(n)) return "—";
+  if (!Number.isFinite(n) || n <= 0) return "—";
   return n.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
@@ -105,6 +129,25 @@ function formatDate(v: unknown) {
   const d = v instanceof Date ? v : new Date(String(v));
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "2-digit" });
+}
+function toIsoOrNull(v: unknown): string | undefined {
+  if (!v) return undefined;
+  const d = v instanceof Date ? v : new Date(String(v));
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}
+
+/** ✅ build /?state=TX&year=2025&... consistently */
+function buildSearchHref(params: Record<string, string | number | null | undefined>) {
+  const usp = new URLSearchParams();
+  usp.set("year", String(SEARCH_YEAR));
+  for (const [k, v] of Object.entries(params)) {
+    if (v === null || v === undefined) continue;
+    const s = String(v).trim();
+    if (!s) continue;
+    usp.set(k, s);
+  }
+  return `/?${usp.toString()}`;
 }
 
 function safeJsonArray(v: unknown): any[] {
@@ -274,7 +317,7 @@ const getStateHubData = unstable_cache(
       jobs: jobsRes.rows,
     };
   },
-  ["state-hub-v4"],
+  ["state-hub-v5"],
   { revalidate: 86400 }
 );
 
@@ -305,28 +348,23 @@ export async function generateMetadata({
   }
 
   const totalCases = asNumber(data.summary.total_cases);
-  const latestYear = data.summary.latest_year;
-  const median = data.summary.wage_p50;
   const indexable = totalCases >= 500;
 
-  // Build a concise, query-aligned title and description.
-  const title = latestYear
-    ? `${stateName} H-1B Salary Data (LCA) – ${latestYear}`
-    : `${stateName} H-1B Salary Data (LCA)`;
+  // For messaging, force the year wording to 2025 (your request).
+  const title = `${stateName} H-1B Visa Salaries ${SEARCH_YEAR} | LCA Wage Data & Statistics`;
 
+  const median = data.summary.wage_p50;
   const descParts: string[] = [];
-  descParts.push(`Explore ${formatInt(totalCases)} public H-1B LCA filings in ${stateName}`);
-  if (latestYear) descParts.push(`through ${latestYear}`);
-  if (median != null && asNumber(median) > 0 && latestYear) {
-    descParts.push(`(median ${formatUSD(median)} in ${latestYear})`);
+  descParts.push(`Explore ${formatInt(totalCases)} public H-1B LCA filings in ${stateName}.`);
+  descParts.push(`All search links on this page are filtered to ${SEARCH_YEAR}.`);
+  if (median != null && asNumber(median) > 0) {
+    descParts.push(`Latest-year median salary: ${formatUSD(median)}.`);
   }
-  descParts.push(`See trends and top cities, employers, and job titles.`);
+  descParts.push(`View top cities, employers, job titles, and wage percentiles.`);
 
   const description = descParts.join(" ").replace(/\s+/g, " ").trim();
 
   const url = `${SITE_URL}/salary/${stateLower}`;
-  const ogTitle = title;
-  const ogDescription = description;
 
   return {
     title,
@@ -338,16 +376,17 @@ export async function generateMetadata({
       googleBot: { index: indexable, follow: indexable },
     },
     openGraph: {
-      title: ogTitle,
-      description: ogDescription,
+      title,
+      description,
       url,
       siteName: "h1bdata.fyi",
       type: "website",
+      locale: "en_US",
     },
     twitter: {
       card: "summary",
-      title: ogTitle,
-      description: ogDescription,
+      title,
+      description,
     },
   };
 }
@@ -377,7 +416,7 @@ export default async function Page({
   const topEmployer = employers?.[0]?.employer_name;
   const topJob = jobs?.[0]?.job_title;
 
-  // Breadcrumb JSON-LD (helps Google understand site hierarchy)
+  // Structured data: Breadcrumb + Dataset (kept conservative)
   const breadcrumbJsonLd = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
@@ -388,12 +427,25 @@ export default async function Page({
     ],
   };
 
+  const datasetJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: `${stateName} H-1B Salary Data (LCA) – ${SEARCH_YEAR}`,
+    description: `H-1B LCA wage statistics for ${stateName}. Search links on this page are filtered to ${SEARCH_YEAR}.`,
+    url: `${SITE_URL}/salary/${stateLower}`,
+    temporalCoverage: `${SEARCH_YEAR}/${SEARCH_YEAR}`,
+    spatialCoverage: { "@type": "Place", name: stateName },
+    creator: { "@type": "Organization", name: "h1bdata.fyi", url: SITE_URL },
+    isBasedOn: { "@type": "Dataset", name: "U.S. Department of Labor LCA Disclosure Data", url: "https://www.dol.gov" },
+    dateModified: toIsoOrNull(summary.refreshed_at),
+  };
+
+  const nearbyStates = getNearbyStates(stateUpper);
+
   return (
     <main style={{ maxWidth: 1160, margin: "0 auto", padding: "26px 16px" }}>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(datasetJsonLd) }} />
 
       <header style={{ marginBottom: 18 }}>
         <div style={{ marginBottom: 10 }}>
@@ -420,20 +472,20 @@ export default async function Page({
             </p>
 
             <p style={{ margin: "10px 0 0 0", lineHeight: 1.6 }}>
-              <Link href={`/?state=${encodeURIComponent(stateUpper)}`}>
-                Search all records in {stateName} →
+              <Link href={buildSearchHref({ state: stateUpper })}>
+                Search {SEARCH_YEAR} records in {stateName} →
               </Link>
             </p>
           </div>
 
-          <div style={{ minWidth: 260 }}>
+          <aside style={{ minWidth: 260 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <Metric label={`P25 (${summary.latest_year ?? "latest"})`} value={formatUSD(summary.wage_p25)} />
               <Metric label={`Median (${summary.latest_year ?? "latest"})`} value={formatUSD(summary.wage_p50)} />
               <Metric label={`P75 (${summary.latest_year ?? "latest"})`} value={formatUSD(summary.wage_p75)} />
               <Metric label={`P90 (${summary.latest_year ?? "latest"})`} value={formatUSD(summary.wage_p90)} />
             </div>
-          </div>
+          </aside>
         </div>
 
         {totalCases < 500 ? (
@@ -452,7 +504,7 @@ export default async function Page({
         ) : null}
       </header>
 
-      {/* ✅ Quality block (unique per state, improves indexability) */}
+      {/* Unique content block */}
       <section
         style={{
           margin: "0 0 22px 0",
@@ -468,52 +520,29 @@ export default async function Page({
         </h2>
 
         <p style={{ margin: 0 }}>
-          {summary.latest_year ? (
-            <>
-              In <strong>{stateName}</strong>, the <strong>median annual wage</strong> in{" "}
-              <strong>{summary.latest_year}</strong> was <strong>{formatUSD(summary.wage_p50)}</strong>
-              {asNumber(summary.wage_n_latest_year) > 0 ? (
-                <>
-                  {" "}
-                  based on <strong>{formatInt(summary.wage_n_latest_year)}</strong> wage observations (wage_annual &gt; 0)
-                </>
-              ) : null}
-              . The middle 50% of wages ranged from <strong>{formatUSD(summary.wage_p25)}</strong> (P25) to{" "}
-              <strong>{formatUSD(summary.wage_p75)}</strong> (P75), and P90 was{" "}
-              <strong>{formatUSD(summary.wage_p90)}</strong>.
-            </>
-          ) : (
-            <>
-              In <strong>{stateName}</strong>, this page summarizes public H-1B LCA wage disclosure records.
-            </>
-          )}
-        </p>
-
-        <p style={{ margin: "10px 0 0 0" }}>
-          This state hub aggregates <strong>{formatInt(summary.total_cases)}</strong> total cases across all years. Use
-          the links below to drill into raw filings.
+          In <strong>{stateName}</strong>, the latest-year median annual wage shown here is{" "}
+          <strong>{formatUSD(summary.wage_p50)}</strong>. All “Search” links on this page are filtered to{" "}
+          <strong>{SEARCH_YEAR}</strong>.
         </p>
 
         <ul style={{ margin: "10px 0 0 18px", padding: 0 }}>
           <li>
-            <Link href={`/?state=${encodeURIComponent(stateUpper)}`} style={{ fontWeight: 700 }}>
-              Search all records in {stateName}
+            <Link href={buildSearchHref({ state: stateUpper })} style={{ fontWeight: 700 }}>
+              Search {SEARCH_YEAR} records in {stateName}
             </Link>
           </li>
 
           {topCity ? (
             <li>
               Top city:{" "}
-              <Link href={`/?state=${encodeURIComponent(stateUpper)}&city=${encodeURIComponent(String(topCity))}`}>
-                {String(topCity)}
-              </Link>
+              <Link href={buildSearchHref({ state: stateUpper, city: String(topCity) })}>{String(topCity)}</Link>
             </li>
           ) : null}
 
           {topEmployer ? (
             <li>
               Top employer:{" "}
-              <Link href={`/?state=${encodeURIComponent(stateUpper)}&em=${encodeURIComponent(String(topEmployer))}`}>
+              <Link href={buildSearchHref({ state: stateUpper, em: String(topEmployer) })}>
                 {String(topEmployer)}
               </Link>
             </li>
@@ -522,9 +551,7 @@ export default async function Page({
           {topJob ? (
             <li>
               Top job title:{" "}
-              <Link href={`/?state=${encodeURIComponent(stateUpper)}&job=${encodeURIComponent(String(topJob))}`}>
-                {String(topJob)}
-              </Link>
+              <Link href={buildSearchHref({ state: stateUpper, job: String(topJob) })}>{titleCaseSimple(String(topJob))}</Link>
             </li>
           ) : null}
 
@@ -539,7 +566,7 @@ export default async function Page({
         </p>
       </section>
 
-      {/* Trends / plots */}
+      {/* Trends (kept as-is; these are your MV’s year series) */}
       <section style={{ marginBottom: 22 }}>
         <h2 style={{ fontSize: 18, fontWeight: 750, margin: "0 0 10px 0" }}>Trends over time</h2>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -577,19 +604,17 @@ export default async function Page({
         </Card>
       </section>
 
-      {/* Top lists */}
+      {/* Top lists (✅ fixed: correct rows per table) */}
       <section style={{ display: "grid", gridTemplateColumns: "1fr", gap: 18 }}>
         <HubTable
-          title={`Top Cities in ${stateName} (${stateUpper})`}
+          title={`Top Cities in ${stateName}`}
           subtitle={`Top ${TOP_N} by case count`}
           columns={[
             {
               key: "city",
               label: "City",
               renderCell: (v: any) => (
-                <Link href={`/?state=${encodeURIComponent(stateUpper)}&city=${encodeURIComponent(String(v))}`}>
-                  {String(v)}
-                </Link>
+                <Link href={buildSearchHref({ state: stateUpper, city: String(v) })}>{String(v)}</Link>
               ),
             },
             { key: "case_count", label: "Cases", renderCell: (v: any) => formatInt(v) },
@@ -600,16 +625,14 @@ export default async function Page({
         />
 
         <HubTable
-          title={`Top Employers in ${stateName} (${stateUpper})`}
+          title={`Top Employers in ${stateName}`}
           subtitle={`Top ${TOP_N} by case count`}
           columns={[
             {
               key: "employer_name",
               label: "Employer",
               renderCell: (v: any) => (
-                <Link href={`/?state=${encodeURIComponent(stateUpper)}&em=${encodeURIComponent(String(v))}`}>
-                  {String(v)}
-                </Link>
+                <Link href={buildSearchHref({ state: stateUpper, em: String(v) })}>{String(v)}</Link>
               ),
             },
             { key: "case_count", label: "Cases", renderCell: (v: any) => formatInt(v) },
@@ -619,16 +642,14 @@ export default async function Page({
         />
 
         <HubTable
-          title={`Top Job Titles in ${stateName} (${stateUpper})`}
+          title={`Top Job Titles in ${stateName}`}
           subtitle={`Top ${TOP_N} by case count`}
           columns={[
             {
               key: "job_title",
               label: "Job title",
               renderCell: (v: any) => (
-                <Link href={`/?state=${encodeURIComponent(stateUpper)}&job=${encodeURIComponent(String(v))}`}>
-                  {String(v)}
-                </Link>
+                <Link href={buildSearchHref({ state: stateUpper, job: String(v) })}>{String(v)}</Link>
               ),
             },
             { key: "case_count", label: "Cases", renderCell: (v: any) => formatInt(v) },
@@ -637,6 +658,36 @@ export default async function Page({
           emptyText="No job title data available."
         />
       </section>
+
+      {/* Nearby states (internal linking) */}
+      {nearbyStates.length > 0 ? (
+        <section
+          style={{
+            marginTop: 22,
+            padding: 16,
+            border: "1px solid rgba(0,0,0,0.1)",
+            borderRadius: 12,
+          }}
+        >
+          <h2 style={{ fontSize: 18, fontWeight: 750, margin: "0 0 12px 0" }}>Compare nearby states</h2>
+          <nav style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            {nearbyStates.map((st) => (
+              <Link
+                key={st}
+                href={`/salary/${toLowerState(st)}`}
+                style={{
+                  padding: "8px 14px",
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  borderRadius: 8,
+                  textDecoration: "none",
+                }}
+              >
+                {getStateName(st)}
+              </Link>
+            ))}
+          </nav>
+        </section>
+      ) : null}
 
       <footer style={{ marginTop: 26, fontSize: 13, opacity: 0.85 }}>
         <p style={{ margin: 0, lineHeight: 1.6 }}>
