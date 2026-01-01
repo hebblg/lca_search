@@ -1,123 +1,162 @@
+// app/api/search/route.ts
 import { NextResponse } from "next/server";
 import { pgPool } from "@/lib/pgPool";
 
 export const runtime = "nodejs";
 
-function trimOrNull(v: unknown) {
+const FIXED_YEAR = 2025;
+
+// caps
+const LIMIT_MAX = 50;
+const SAMPLE_LIMIT_MAX = 12;
+
+// timeouts (ms)
+const STATEMENT_TIMEOUT_MS = 2000;
+const SAMPLE_TIMEOUT_MS = 800;
+
+function trimOrNull(v: unknown): string | null {
   const s = String(v ?? "").trim();
   return s.length ? s : null;
 }
-function tooShort(s: string | null) {
+
+function asInt(v: unknown, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function isValidState2(s: string): boolean {
+  return /^[A-Z]{2}$/.test(s);
+}
+
+function tooShort3(s: string | null): boolean {
   return s !== null && s.length > 0 && s.length < 3;
 }
-function toFiniteNumberOrNull(v: unknown) {
-  const s = trimOrNull(v);
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : NaN;
-}
+
+// “Featured 2025” sample query: index-friendly (no ORDER BY random())
+const SQL_SAMPLE_2025 = /* sql */ `
+SELECT
+  case_number,
+  employer_name,
+  job_title,
+  worksite_city,
+  worksite_state,
+  year,
+  wage_annual
+FROM public.lca_cases
+WHERE year = $1
+  AND decision_date IS NOT NULL
+  AND wage_annual IS NOT NULL
+  AND wage_annual > 0
+ORDER BY decision_date DESC
+LIMIT $2;
+`;
+
+// Main search query (still fast if you have trigram indexes on *_lc columns)
+const SQL_SEARCH_2025 = /* sql */ `
+SELECT
+  case_number,
+  employer_name,
+  job_title,
+  worksite_city,
+  worksite_state,
+  year,
+  wage_annual
+FROM public.lca_cases
+WHERE year = $1
+  AND ($2::text IS NULL OR worksite_state = $2)
+  AND ($3::text IS NULL OR employer_name ILIKE $3)
+  AND ($4::text IS NULL OR job_title ILIKE $4)
+  AND ($5::text IS NULL OR worksite_city ILIKE $5)
+ORDER BY wage_annual DESC NULLS LAST, case_number ASC
+LIMIT $6 OFFSET $7;
+`;
 
 export async function POST(req: Request) {
+  const client = await pgPool.connect();
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({} as any));
 
-    const limit = Math.min(Math.max(Number(body.limit ?? 50), 1), 100);
-    const page = Math.max(Number(body.page ?? 0), 0);
-    const offset = page * limit;
+    const rawEmployer = trimOrNull(body.employer);
+    const rawJob = trimOrNull(body.job);
+    const rawCity = trimOrNull(body.city);
 
-    const employer = trimOrNull(body.employer);
-    const job = trimOrNull(body.job);
-    const city = trimOrNull(body.city);
+    const rawState = trimOrNull(body.state);
+    const state = rawState ? rawState.toUpperCase() : null;
 
-    // Rule: if text is present but < 3 chars => do not search
-    if (tooShort(employer) || tooShort(job) || tooShort(city)) {
+    const page = Math.max(0, asInt(body.page, 0));
+    const limitReq = asInt(body.limit, LIMIT_MAX);
+
+    const sample = Boolean(body.sample);
+
+    // Normalize limit + offset
+    const limit = Math.min(Math.max(limitReq, 1), sample ? SAMPLE_LIMIT_MAX : LIMIT_MAX);
+    const offset = sample ? 0 : page * limit;
+
+    // Basic validation for text inputs
+    if (tooShort3(rawEmployer) || tooShort3(rawJob) || tooShort3(rawCity)) {
       return NextResponse.json(
-        { error: "Please enter at least 3 characters for employer/job/city." },
+        { error: "Use at least 3 characters for employer/job/city." },
         { status: 400 }
       );
     }
 
-    const p_state = trimOrNull(body.state)?.toUpperCase() ?? null;
-
-    const yearNum = toFiniteNumberOrNull(body.year);
-    if (Number.isNaN(yearNum)) {
-      return NextResponse.json({ error: "Invalid year." }, { status: 400 });
+    if (state && !isValidState2(state)) {
+      return NextResponse.json({ error: "State must be a 2-letter code (e.g., CA)." }, { status: 400 });
     }
-    const p_year = yearNum as number | null;
 
-    // Keep these for backward compatibility (even if UI doesn't send)
-    const p_status = trimOrNull(body.status);
+    // If this is the homepage sample load: allow empty filters
+    if (sample) {
+      await client.query("BEGIN");
+      await client.query(`SET LOCAL statement_timeout = '${SAMPLE_TIMEOUT_MS}ms'`);
 
-    const minNum = toFiniteNumberOrNull(body.minWage);
-    if (Number.isNaN(minNum)) {
-      return NextResponse.json({ error: "Invalid minWage." }, { status: 400 });
+      const res = await client.query(SQL_SAMPLE_2025, [FIXED_YEAR, limit]);
+
+      await client.query("COMMIT");
+      return NextResponse.json({ rows: res.rows });
     }
-    const p_min = minNum as number | null;
 
-    const maxNum = toFiniteNumberOrNull(body.maxWage);
-    if (Number.isNaN(maxNum)) {
-      return NextResponse.json({ error: "Invalid maxWage." }, { status: 400 });
-    }
-    const p_max = maxNum as number | null;
+    // Normal search: require employer/job/city (3+ chars) OR state
+    const hasText =
+      (rawEmployer ?? "").length >= 3 ||
+      (rawJob ?? "").length >= 3 ||
+      (rawCity ?? "").length >= 3;
 
-    // Rule: do not search if empty OR year-only.
-    // "Non-year filters" are everything except year.
-    const hasNonYearFilter =
-      employer !== null ||
-      job !== null ||
-      city !== null ||
-      p_state !== null ||
-      p_status !== null ||
-      p_min !== null ||
-      p_max !== null;
-
-    if (!hasNonYearFilter) {
-      // This covers: totally empty search AND year-only search
+    if (!hasText && !state) {
       return NextResponse.json(
         { error: "Please provide employer/job/city (3+ chars) or state. Year-only search is not allowed." },
         { status: 400 }
       );
     }
 
-    // Optional: keep your anti-scraping rule (large offsets with weak filters)
-    // If you want: block high offset unless there is at least one text filter (employer/job/city)
-    // const hasTextFilter = employer !== null || job !== null || city !== null;
-    // if (!hasTextFilter && offset >= 2000) {
-    //   return NextResponse.json({ error: "Offset too large without text filters." }, { status: 400 });
-    // }
+    // Build ILIKE patterns (only when provided)
+    const employerLike = rawEmployer ? `%${rawEmployer}%` : null;
+    const jobLike = rawJob ? `%${rawJob}%` : null;
+    const cityLike = rawCity ? `%${rawCity}%` : null;
 
-    const sql = `
-      select *
-      from public.search_lca_cases_fields_v2(
-        $1::text, $2::text, $3::text, $4::text,
-        $5::int,  $6::text,
-        $7::numeric, $8::numeric,
-        $9::int, $10::int
-      )
-    `;
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
 
-    const t0 = Date.now();
-    const result = await pgPool.query(sql, [
-      employer,
-      job,
-      city,
-      p_state,
-      p_year,
-      p_status,
-      p_min,
-      p_max,
+    const res = await client.query(SQL_SEARCH_2025, [
+      FIXED_YEAR,
+      state,
+      employerLike,
+      jobLike,
+      cityLike,
       limit,
       offset,
     ]);
-    const totalMs = Date.now() - t0;
 
-    console.log("PG total ms:", totalMs, "rows:", result.rowCount);
-
-    return NextResponse.json(
-      { rows: result.rows, page, limit },
-      { headers: { "x-total-ms": String(totalMs) } }
-    );
+    await client.query("COMMIT");
+    return NextResponse.json({ rows: res.rows });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Unknown error" }, { status: 500 });
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ignore
+    }
+    const msg = e?.message ?? "Server error";
+    return NextResponse.json({ error: msg }, { status: 500 });
+  } finally {
+    client.release();
   }
 }

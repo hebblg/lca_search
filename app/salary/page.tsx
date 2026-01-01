@@ -115,6 +115,13 @@ function formatDate(v: unknown) {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "2-digit" });
 }
 
+function toIsoOrNull(v: unknown): string | undefined {
+  if (!v) return undefined;
+  const d = v instanceof Date ? v : new Date(String(v));
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toISOString();
+}
+
 function maxDate(values: Array<string | Date | null | undefined>): Date | null {
   let best: Date | null = null;
   for (const v of values) {
@@ -146,7 +153,7 @@ const getIndexableStates = unstable_cache(
     // Safety: keep only valid 2-letter codes
     return res.rows.filter((r) => typeof r.state === "string" && /^[A-Z]{2}$/.test(r.state));
   },
-  ["salary-hub-indexable-states-v2"],
+  ["salary-hub-indexable-states-v3"],
   { revalidate: 86400 }
 );
 
@@ -154,11 +161,16 @@ export default async function SalaryHubPage() {
   const rows = await getIndexableStates();
   const updatedAt = maxDate(rows.map((r) => r.refreshed_at));
 
+  const totalCasesAllStates = rows.reduce((acc, r) => acc + asNumber(r.total_cases), 0);
+
   // quick links: highest-volume states
   const topStates = rows.slice(0, 12);
 
   // A–Z browse (internal linking for discovery)
   const rowsAlpha = [...rows].sort((a, b) => a.state.localeCompare(b.state));
+
+  const exampleStates = topStates.slice(0, 3);
+  const exampleStateNames = exampleStates.map((r) => getStateName(r.state));
 
   // Breadcrumb JSON-LD
   const breadcrumbJsonLd = {
@@ -170,22 +182,86 @@ export default async function SalaryHubPage() {
     ],
   };
 
+  // Dataset JSON-LD (hub page)
+  const datasetJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "H-1B Salary Data by State (LCA)",
+    description:
+      "State-level H-1B LCA wage statistics based on U.S. Department of Labor public disclosure data, including case counts and wage percentiles. Open a state to see trends and top cities, employers, and job titles.",
+    url: `${SITE_URL}/salary`,
+    creator: { "@type": "Organization", name: "h1bdata.fyi", url: SITE_URL },
+    isBasedOn: { "@type": "Dataset", name: "U.S. Department of Labor LCA Disclosure Data", url: "https://www.dol.gov" },
+    dateModified: toIsoOrNull(updatedAt),
+  };
+
   return (
     <main style={{ maxWidth: 1160, margin: "0 auto", padding: "26px 16px" }}>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
-      />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(datasetJsonLd) }} />
 
       <header style={{ marginBottom: 18 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 750, margin: "0 0 8px 0" }}>
-          H-1B Salary Data by State (LCA)
-        </h1>
+        <h1 style={{ fontSize: 28, fontWeight: 750, margin: "0 0 8px 0" }}>H-1B Salary Data by State (LCA)</h1>
         <p style={{ margin: 0, lineHeight: 1.6 }}>
-          Browse indexable state pages (only states with <strong>{INDEX_MIN_CASES}+</strong> cases).
-          Updated: <strong>{formatDate(updatedAt)}</strong>.
+          Browse indexable state pages (only states with <strong>{INDEX_MIN_CASES}+</strong> cases). Updated:{" "}
+          <strong>{formatDate(updatedAt)}</strong>.
         </p>
       </header>
+
+      {/* ✅ SEO paragraph block (like state page) */}
+      <section
+        style={{
+          margin: "0 0 18px 0",
+          border: "1px solid rgba(0,0,0,0.1)",
+          borderRadius: 12,
+          padding: 16,
+          background: "rgba(0,0,0,0.02)",
+          lineHeight: 1.65,
+        }}
+      >
+        <h2 style={{ fontSize: 16, fontWeight: 800, margin: "0 0 8px 0" }}>Salary hub overview</h2>
+
+        <p style={{ margin: 0 }}>
+          This page aggregates <strong>{formatInt(totalCasesAllStates)}</strong> public H-1B Labor Condition Application
+          (LCA) filings across <strong>{rows.length}</strong> indexable states. Open a state page to review{" "}
+          <strong>median salaries</strong>, <strong>wage percentiles</strong>, and <strong>trends over time</strong>, plus
+          the top cities, employers, and job titles driving H-1B filings.
+        </p>
+
+        <p style={{ margin: "10px 0 0 0" }}>
+          Suggested starting points:{" "}
+          {exampleStates.map((r, i) => {
+            const stLower = r.state.toLowerCase();
+            const name = getStateName(r.state);
+            return (
+              <span key={r.state}>
+                <Link href={`/salary/${stLower}`} style={{ fontWeight: 700 }}>
+                  {name}
+                </Link>
+                {i < exampleStates.length - 1 ? " · " : ""}
+              </span>
+            );
+          })}
+          .
+        </p>
+
+        <ul style={{ margin: "10px 0 0 18px", padding: 0 }}>
+          <li>
+            Search raw records: <Link href="/">Search</Link>
+          </li>
+          <li>
+            Methodology: <Link href="/methodology">How we compute these statistics</Link>
+          </li>
+          <li>
+            Browse state pages below for internal comparisons (e.g., {exampleStateNames.join(", ")}).
+          </li>
+        </ul>
+
+        <p style={{ margin: "10px 0 0 0", fontSize: 13, opacity: 0.85 }}>
+          Note: LCA filings represent employer intent to sponsor H-1B visas and do not necessarily indicate approval.
+          Wage fields may be missing or inconsistent due to source reporting and data cleaning.
+        </p>
+      </section>
 
       {/* Quick links: top by volume */}
       <section

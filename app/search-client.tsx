@@ -8,7 +8,7 @@ type SearchForm = {
   job: string;
   city: string;
   state: string;
-  year: string; // "" means Any
+  year: string; // UI kept, but we force 2025 in requests
 };
 
 const DEFAULT_FORM: SearchForm = {
@@ -16,18 +16,19 @@ const DEFAULT_FORM: SearchForm = {
   job: "",
   city: "",
   state: "",
-  year: "",
+  year: "2025",
 };
 
 const LIMIT = 50;
 
-// Year dropdown options (dynamic): 2020 -> current year, descending
-const YEAR_MIN = 2020;
-const YEAR_MAX = new Date().getFullYear();
-const YEAR_OPTIONS: string[] = [
-  "",
-  ...Array.from({ length: YEAR_MAX - YEAR_MIN + 1 }, (_, i) => String(YEAR_MAX - i)),
-];
+// ✅ Force all searches to 2025
+const FIXED_YEAR = "2025";
+
+// ✅ If no query params, load a small “sample” set for the homepage
+const SAMPLE_LIMIT = 12;
+
+// Year dropdown options: only 2025 (per your requirement)
+const YEAR_OPTIONS: string[] = [FIXED_YEAR];
 
 type SortKey = "employer" | "job" | "location" | "year" | "wage";
 type SortDir = "asc" | "desc";
@@ -59,7 +60,7 @@ export default function SearchClient() {
       job: params.get("job") ?? "",
       city: params.get("city") ?? "",
       state: params.get("state") ?? "",
-      year: params.get("year") ?? "",
+      year: FIXED_YEAR, // force
     };
 
     const initialPage = Number(params.get("page") ?? "0");
@@ -69,8 +70,23 @@ export default function SearchClient() {
     setApplied(initial);
     setPage(safePage);
 
-    const hasAny = Object.values(initial).some((v) => v.trim() !== "");
-    if (hasAny) void runSearch(initial, safePage);
+    const hasAnyQuery =
+      (initial.employer ?? "").trim() !== "" ||
+      (initial.job ?? "").trim() !== "" ||
+      (initial.city ?? "").trim() !== "" ||
+      (initial.state ?? "").trim() !== "" ||
+      (params.get("year") ?? "").trim() !== ""; // allow existing URLs, but ignored
+
+    if (hasAnyQuery) {
+      void runSearch(initial, safePage);
+    } else {
+      // ✅ Show sample results immediately on homepage
+      void runSearch(
+        { ...DEFAULT_FORM, year: FIXED_YEAR },
+        0,
+        { limitOverride: SAMPLE_LIMIT, shuffleSample: true, sample: true }
+      );
+    }
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -82,13 +98,19 @@ export default function SearchClient() {
     if (nextApplied.job) sp.set("job", nextApplied.job);
     if (nextApplied.city) sp.set("city", nextApplied.city);
     if (nextApplied.state) sp.set("state", nextApplied.state);
-    if (nextApplied.year) sp.set("year", nextApplied.year);
+
+    // keep year in URL for clarity, but it is fixed
+    sp.set("year", FIXED_YEAR);
 
     sp.set("page", String(nextPage));
     router.replace(`/?${sp.toString()}`);
   }
 
-  async function runSearch(criteria: SearchForm, nextPage: number) {
+  async function runSearch(
+    criteria: SearchForm,
+    nextPage: number,
+    opts?: { limitOverride?: number; shuffleSample?: boolean; sample?: boolean }
+  ) {
     setLoading(true);
     setErrorMsg("");
 
@@ -101,9 +123,10 @@ export default function SearchClient() {
           job: criteria.job,
           city: criteria.city,
           state: criteria.state,
-          year: criteria.year,
+          year: FIXED_YEAR, // ✅ forced
           page: nextPage,
-          limit: LIMIT,
+          limit: opts?.limitOverride ?? LIMIT,
+          sample: Boolean(opts?.sample), // ✅ enables server “sample mode”
         }),
       });
 
@@ -120,13 +143,29 @@ export default function SearchClient() {
         return;
       }
 
-      setRows(json.rows ?? []);
+      let out = json.rows ?? [];
+
+      // Optional: shuffle sample results in UI so it “feels random”
+      if (opts?.shuffleSample && out.length > 1) {
+        out = shuffle(out);
+      }
+
+      setRows(out);
     } catch (e: any) {
       setRows([]);
       setErrorMsg(e?.message ?? "Network error");
     } finally {
       setLoading(false);
     }
+  }
+
+  function shuffle<T>(arr: T[]) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
   }
 
   function onChange<K extends keyof SearchForm>(key: K, val: string) {
@@ -139,6 +178,7 @@ export default function SearchClient() {
     const nextApplied: SearchForm = {
       ...draft,
       state: draft.state.trim().toUpperCase(),
+      year: FIXED_YEAR,
     };
     const nextPage = 0;
 
@@ -163,12 +203,16 @@ export default function SearchClient() {
   }
 
   function clearAll() {
-    setDraft(DEFAULT_FORM);
-    setApplied(DEFAULT_FORM);
+    const cleared: SearchForm = { ...DEFAULT_FORM, year: FIXED_YEAR };
+    setDraft(cleared);
+    setApplied(cleared);
     setPage(0);
     setRows([]);
     setErrorMsg("");
     router.replace("/");
+
+    // show sample results again after clearing
+    void runSearch(cleared, 0, { limitOverride: SAMPLE_LIMIT, shuffleSample: true, sample: true });
   }
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(applied);
@@ -178,7 +222,6 @@ export default function SearchClient() {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(nextKey);
-      // sensible defaults
       setSortDir(nextKey === "wage" || nextKey === "year" ? "desc" : "asc");
     }
   }
@@ -234,7 +277,6 @@ export default function SearchClient() {
         if (av !== null && bv !== null && av !== bv) return (av - bv) * dir;
       }
 
-      // tie-breaker for stable results
       return toText(a.case_number).localeCompare(toText(b.case_number));
     });
 
@@ -244,14 +286,13 @@ export default function SearchClient() {
   return (
     <main className="page">
       <div className="header">
-        <h1 className="title">LCA Search</h1>
+        <h1 className="title">LCA Search (2025)</h1>
         <div className="subtle">
           Limit {LIMIT} per page • Results: {rows.length}
         </div>
       </div>
 
       <form onSubmit={onSubmit} className="card">
-        {/* Inputs row: responsive widths so Year never gets cut */}
         <div className="inputsRow">
           <div className="field">
             <label>Employer</label>
@@ -292,24 +333,19 @@ export default function SearchClient() {
 
           <div className="field yearField">
             <label>Year</label>
-            <select value={draft.year} onChange={(e) => onChange("year", e.target.value)}>
+            <select value={FIXED_YEAR} disabled>
               {YEAR_OPTIONS.map((y) => (
-                <option key={y || "any"} value={y}>
-                  {y ? y : "Any"}
+                <option key={y} value={y}>
+                  {y}
                 </option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* Actions row */}
         <div className="actionsRow">
           <div className="leftMeta">
-            {dirty ? (
-              <span className="pill warn">Not searched yet</span>
-            ) : (
-              <span className="pill ok">In sync</span>
-            )}
+            {dirty ? <span className="pill warn">Not searched yet</span> : <span className="pill ok">In sync</span>}
             {loading && <span className="pill info">Searching…</span>}
           </div>
 
@@ -391,7 +427,10 @@ export default function SearchClient() {
                     <td className="cellMain" title={r.job_title ?? ""}>
                       {r.job_title ?? ""}
                     </td>
-                    <td className="cellSub" title={`${r.worksite_city ?? ""}${r.worksite_state ? `, ${r.worksite_state}` : ""}`}>
+                    <td
+                      className="cellSub"
+                      title={`${r.worksite_city ?? ""}${r.worksite_state ? `, ${r.worksite_state}` : ""}`}
+                    >
                       {(r.worksite_city ?? "") + (r.worksite_state ? `, ${r.worksite_state}` : "")}
                     </td>
                     <td className="num">{r.year ?? ""}</td>
@@ -445,23 +484,17 @@ export default function SearchClient() {
           box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
         }
 
-        /*
-          FIX for Year control being cut:
-          - Use responsive minmax columns (shrinks gracefully)
-          - Add right padding to row so last control isn't flush to edge
-          - Remove any hard "min-width" forcing it off screen
-        */
         .inputsRow {
           display: grid;
           grid-template-columns:
             minmax(160px, 220px) /* employer */
             minmax(220px, 1.4fr) /* job */
-            minmax(160px, 1fr)   /* city */
-            90px                 /* state */
-            minmax(140px, 180px) /* year */;
+            minmax(160px, 1fr) /* city */
+            90px /* state */
+            minmax(140px, 180px); /* year */
           gap: 10px;
           align-items: end;
-          padding-right: 8px; /* important: prevents last control from touching edge */
+          padding-right: 8px;
         }
 
         .field {
@@ -493,9 +526,8 @@ export default function SearchClient() {
           min-width: 0;
         }
 
-        /* Ensures the arrow/text never looks clipped */
         select {
-          padding-right: 34px; /* extra room for dropdown arrow */
+          padding-right: 34px;
           appearance: auto;
         }
 
@@ -645,7 +677,7 @@ export default function SearchClient() {
           font-size: 12px;
           text-transform: uppercase;
           letter-spacing: 0.03em;
-          padding: 0; /* button will handle padding */
+          padding: 0;
           text-align: left;
           z-index: 1;
         }
@@ -720,7 +752,6 @@ export default function SearchClient() {
         }
 
         @media (max-width: 900px) {
-          /* On smaller screens, keep the single-row idea but allow horizontal scrolling safely */
           .inputsRow {
             overflow-x: auto;
             padding-bottom: 6px;
