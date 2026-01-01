@@ -8,11 +8,71 @@ export const runtime = "nodejs";
 export const revalidate = 86400;
 
 const INDEX_MIN_CASES = 500;
+const SITE_URL = "https://www.h1bdata.fyi";
+
+/** Use full state names for UX + SEO. */
+const STATE_NAME: Record<string, string> = {
+  AL: "Alabama",
+  AK: "Alaska",
+  AZ: "Arizona",
+  AR: "Arkansas",
+  CA: "California",
+  CO: "Colorado",
+  CT: "Connecticut",
+  DE: "Delaware",
+  FL: "Florida",
+  GA: "Georgia",
+  HI: "Hawaii",
+  ID: "Idaho",
+  IL: "Illinois",
+  IN: "Indiana",
+  IA: "Iowa",
+  KS: "Kansas",
+  KY: "Kentucky",
+  LA: "Louisiana",
+  ME: "Maine",
+  MD: "Maryland",
+  MA: "Massachusetts",
+  MI: "Michigan",
+  MN: "Minnesota",
+  MS: "Mississippi",
+  MO: "Missouri",
+  MT: "Montana",
+  NE: "Nebraska",
+  NV: "Nevada",
+  NH: "New Hampshire",
+  NJ: "New Jersey",
+  NM: "New Mexico",
+  NY: "New York",
+  NC: "North Carolina",
+  ND: "North Dakota",
+  OH: "Ohio",
+  OK: "Oklahoma",
+  OR: "Oregon",
+  PA: "Pennsylvania",
+  RI: "Rhode Island",
+  SC: "South Carolina",
+  SD: "South Dakota",
+  TN: "Tennessee",
+  TX: "Texas",
+  UT: "Utah",
+  VT: "Vermont",
+  VA: "Virginia",
+  WA: "Washington",
+  WV: "West Virginia",
+  WI: "Wisconsin",
+  WY: "Wyoming",
+  DC: "District of Columbia",
+};
+function getStateName(stateUpper: string) {
+  return STATE_NAME[stateUpper] ?? stateUpper;
+}
 
 export const metadata: Metadata = {
-  title: "H-1B LCA Wages by State",
+  title: "H-1B Salary Data by State (LCA) – Case Counts and Median Wages",
   description:
-    "Browse public H-1B LCA wage disclosure data by U.S. state, including case counts and wage percentiles.",
+    "Browse public H-1B LCA wage disclosure data by U.S. state: case counts, latest-year median wages, and percentile ranges. Open any state to see trends, top cities, employers, and job titles.",
+  alternates: { canonical: "/salary" },
 };
 
 type StateRow = {
@@ -55,6 +115,17 @@ function formatDate(v: unknown) {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "2-digit" });
 }
 
+function maxDate(values: Array<string | Date | null | undefined>): Date | null {
+  let best: Date | null = null;
+  for (const v of values) {
+    if (!v) continue;
+    const d = v instanceof Date ? v : new Date(String(v));
+    if (Number.isNaN(d.getTime())) continue;
+    if (!best || d.getTime() > best.getTime()) best = d;
+  }
+  return best;
+}
+
 const SQL_INDEXABLE_STATES = /* sql */ `
 select
   state,
@@ -72,24 +143,43 @@ order by total_cases desc, state asc;
 const getIndexableStates = unstable_cache(
   async () => {
     const res = await pgPool.query<StateRow>(SQL_INDEXABLE_STATES, [INDEX_MIN_CASES]);
-    // Safety: keep only valid 2-letter states
+    // Safety: keep only valid 2-letter codes
     return res.rows.filter((r) => typeof r.state === "string" && /^[A-Z]{2}$/.test(r.state));
   },
-  ["salary-hub-indexable-states-v1"],
+  ["salary-hub-indexable-states-v2"],
   { revalidate: 86400 }
 );
 
 export default async function SalaryHubPage() {
   const rows = await getIndexableStates();
-  const updatedAt = rows.length ? rows.map((r) => r.refreshed_at).find(Boolean) : null;
+  const updatedAt = maxDate(rows.map((r) => r.refreshed_at));
 
+  // quick links: highest-volume states
   const topStates = rows.slice(0, 12);
+
+  // A–Z browse (internal linking for discovery)
+  const rowsAlpha = [...rows].sort((a, b) => a.state.localeCompare(b.state));
+
+  // Breadcrumb JSON-LD
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: SITE_URL },
+      { "@type": "ListItem", position: 2, name: "Salary by State", item: `${SITE_URL}/salary` },
+    ],
+  };
 
   return (
     <main style={{ maxWidth: 1160, margin: "0 auto", padding: "26px 16px" }}>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
+      />
+
       <header style={{ marginBottom: 18 }}>
         <h1 style={{ fontSize: 28, fontWeight: 750, margin: "0 0 8px 0" }}>
-          H-1B LCA Wages by State
+          H-1B Salary Data by State (LCA)
         </h1>
         <p style={{ margin: 0, lineHeight: 1.6 }}>
           Browse indexable state pages (only states with <strong>{INDEX_MIN_CASES}+</strong> cases).
@@ -97,19 +187,20 @@ export default async function SalaryHubPage() {
         </p>
       </header>
 
-      {/* Quick links */}
+      {/* Quick links: top by volume */}
       <section
         style={{
           border: "1px solid rgba(0,0,0,0.1)",
           borderRadius: 12,
           padding: 16,
-          marginBottom: 18,
+          marginBottom: 14,
         }}
       >
         <div style={{ fontSize: 16, fontWeight: 750, marginBottom: 8 }}>Top states by volume</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
           {topStates.map((r) => {
             const stLower = r.state.toLowerCase();
+            const name = getStateName(r.state);
             return (
               <Link
                 key={r.state}
@@ -124,8 +215,45 @@ export default async function SalaryHubPage() {
                   textDecoration: "none",
                 }}
               >
-                <strong>{r.state}</strong>
+                <strong>{name}</strong>
+                <span style={{ opacity: 0.75 }}>({r.state})</span>
                 <span style={{ opacity: 0.8 }}>{formatInt(r.total_cases)}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* A–Z browse: crawl discovery */}
+      <section
+        style={{
+          border: "1px solid rgba(0,0,0,0.1)",
+          borderRadius: 12,
+          padding: 16,
+          marginBottom: 18,
+        }}
+      >
+        <div style={{ fontSize: 16, fontWeight: 750, marginBottom: 8 }}>Browse all states (A–Z)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          {rowsAlpha.map((r) => {
+            const stLower = r.state.toLowerCase();
+            const name = getStateName(r.state);
+            return (
+              <Link
+                key={`az-${r.state}`}
+                href={`/salary/${stLower}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "7px 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  textDecoration: "none",
+                }}
+              >
+                <span style={{ fontWeight: 700 }}>{name}</span>
+                <span style={{ opacity: 0.75 }}>({r.state})</span>
               </Link>
             );
           })}
@@ -171,11 +299,12 @@ export default async function SalaryHubPage() {
             <tbody>
               {rows.map((r) => {
                 const stLower = r.state.toLowerCase();
+                const name = getStateName(r.state);
                 return (
                   <tr key={r.state}>
                     <td style={td}>
                       <Link href={`/salary/${stLower}`} style={{ textDecoration: "none" }}>
-                        <strong>{r.state}</strong>
+                        <strong>{name}</strong> <span style={{ opacity: 0.75 }}>({r.state})</span>
                       </Link>
                     </td>
                     <td style={td}>{formatInt(r.total_cases)}</td>
@@ -205,6 +334,7 @@ export default async function SalaryHubPage() {
       <footer style={{ marginTop: 22, fontSize: 13, opacity: 0.85 }}>
         <p style={{ margin: 0, lineHeight: 1.6 }}>
           Data source: U.S. Department of Labor LCA public disclosure. LCA filings do not necessarily indicate approval.
+          Data may contain errors or inconsistencies due to reporting and cleaning.
         </p>
       </footer>
     </main>

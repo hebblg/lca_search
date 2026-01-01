@@ -10,6 +10,62 @@ export const runtime = "nodejs";
 export const revalidate = 86400;
 
 const TOP_N = 25;
+const SITE_URL = "https://www.h1bdata.fyi";
+
+/** US state/territory name map (SEO: use full names in titles/snippets). */
+const STATE_NAME: Record<string, string> = {
+  AL: "Alabama",
+  AK: "Alaska",
+  AZ: "Arizona",
+  AR: "Arkansas",
+  CA: "California",
+  CO: "Colorado",
+  CT: "Connecticut",
+  DE: "Delaware",
+  FL: "Florida",
+  GA: "Georgia",
+  HI: "Hawaii",
+  ID: "Idaho",
+  IL: "Illinois",
+  IN: "Indiana",
+  IA: "Iowa",
+  KS: "Kansas",
+  KY: "Kentucky",
+  LA: "Louisiana",
+  ME: "Maine",
+  MD: "Maryland",
+  MA: "Massachusetts",
+  MI: "Michigan",
+  MN: "Minnesota",
+  MS: "Mississippi",
+  MO: "Missouri",
+  MT: "Montana",
+  NE: "Nebraska",
+  NV: "Nevada",
+  NH: "New Hampshire",
+  NJ: "New Jersey",
+  NM: "New Mexico",
+  NY: "New York",
+  NC: "North Carolina",
+  ND: "North Dakota",
+  OH: "Ohio",
+  OK: "Oklahoma",
+  OR: "Oregon",
+  PA: "Pennsylvania",
+  RI: "Rhode Island",
+  SC: "South Carolina",
+  SD: "South Dakota",
+  TN: "Tennessee",
+  TX: "Texas",
+  UT: "Utah",
+  VT: "Vermont",
+  VA: "Virginia",
+  WA: "Washington",
+  WV: "West Virginia",
+  WI: "Wisconsin",
+  WY: "Wyoming",
+  DC: "District of Columbia",
+};
 
 function isValidStateSlug(s: string) {
   return /^[a-zA-Z]{2}$/.test(s);
@@ -20,6 +76,10 @@ function toUpperState(s: string) {
 function toLowerState(s: string) {
   return s.toLowerCase();
 }
+function getStateName(stateUpper: string) {
+  return STATE_NAME[stateUpper] ?? stateUpper;
+}
+
 function asNumber(v: unknown): number {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
   if (typeof v === "string") {
@@ -71,7 +131,7 @@ type YearPoint = {
 
 function normalizeYearSeries(raw: unknown): YearPoint[] {
   const arr = safeJsonArray(raw);
-  const pts = arr
+  return arr
     .map((x) => ({
       year: asNumber((x as any).year),
       total_cases: asNumber((x as any).total_cases),
@@ -81,8 +141,6 @@ function normalizeYearSeries(raw: unknown): YearPoint[] {
     }))
     .filter((p) => Number.isFinite(p.year) && p.year > 0)
     .sort((a, b) => a.year - b.year);
-
-  return pts;
 }
 
 /**
@@ -135,7 +193,7 @@ LIMIT 1;
 
 const SQL_TOP_CITIES = /* sql */ `
 SELECT
-  city,
+  COALESCE(NULLIF(TRIM(city), ''), 'Unknown') AS city,
   case_count::bigint   AS case_count,
   median_wage::numeric AS median_wage,
   rnk::int             AS rnk
@@ -147,7 +205,7 @@ LIMIT $2;
 
 const SQL_TOP_EMPLOYERS = /* sql */ `
 SELECT
-  employer_name,
+  COALESCE(NULLIF(TRIM(employer_name), ''), 'Unknown') AS employer_name,
   case_count::bigint AS case_count,
   rnk::int           AS rnk
 FROM agg.lca_state_top_employers_mv
@@ -158,7 +216,7 @@ LIMIT $2;
 
 const SQL_TOP_JOBS = /* sql */ `
 SELECT
-  job_title,
+  COALESCE(NULLIF(TRIM(job_title), ''), 'Unknown') AS job_title,
   case_count::bigint AS case_count,
   rnk::int           AS rnk
 FROM agg.lca_state_top_jobs_mv
@@ -216,7 +274,7 @@ const getStateHubData = unstable_cache(
       jobs: jobsRes.rows,
     };
   },
-  ["state-hub-v3"],
+  ["state-hub-v4"],
   { revalidate: 86400 }
 );
 
@@ -228,18 +286,19 @@ export async function generateMetadata({
   const { state: slug } = await params;
 
   if (!isValidStateSlug(slug)) {
-    return { title: "H-1B LCA Wages", robots: { index: false, follow: false } };
+    return { title: "H-1B Salary Data (LCA)", robots: { index: false, follow: false } };
   }
 
   const stateLower = toLowerState(slug);
   const stateUpper = toUpperState(slug);
+  const stateName = getStateName(stateUpper);
 
   const data = await getStateHubData(stateUpper, TOP_N);
 
   if (!data.summary) {
     return {
-      title: `H-1B LCA Wages in ${stateUpper}`,
-      description: `Public H-1B LCA wage disclosure data for ${stateUpper}.`,
+      title: `H-1B Salary Data (LCA) – ${stateName}`,
+      description: `Public H-1B LCA wage disclosure data for ${stateName}.`,
       alternates: { canonical: `/salary/${stateLower}` },
       robots: { index: false, follow: false },
     };
@@ -247,18 +306,48 @@ export async function generateMetadata({
 
   const totalCases = asNumber(data.summary.total_cases);
   const latestYear = data.summary.latest_year;
+  const median = data.summary.wage_p50;
   const indexable = totalCases >= 500;
 
+  // Build a concise, query-aligned title and description.
+  const title = latestYear
+    ? `${stateName} H-1B Salary Data (LCA) – ${latestYear}`
+    : `${stateName} H-1B Salary Data (LCA)`;
+
+  const descParts: string[] = [];
+  descParts.push(`Explore ${formatInt(totalCases)} public H-1B LCA filings in ${stateName}`);
+  if (latestYear) descParts.push(`through ${latestYear}`);
+  if (median != null && asNumber(median) > 0 && latestYear) {
+    descParts.push(`(median ${formatUSD(median)} in ${latestYear})`);
+  }
+  descParts.push(`See trends and top cities, employers, and job titles.`);
+
+  const description = descParts.join(" ").replace(/\s+/g, " ").trim();
+
+  const url = `${SITE_URL}/salary/${stateLower}`;
+  const ogTitle = title;
+  const ogDescription = description;
+
   return {
-    title: `H-1B LCA Wages in ${stateUpper}`,
-    description: `Explore public H-1B LCA wage disclosure data in ${stateUpper}: ${formatInt(
-      totalCases
-    )} cases through ${latestYear ?? "the latest year available"}.`,
+    title,
+    description,
     alternates: { canonical: `/salary/${stateLower}` },
     robots: {
       index: indexable,
       follow: indexable,
       googleBot: { index: indexable, follow: indexable },
+    },
+    openGraph: {
+      title: ogTitle,
+      description: ogDescription,
+      url,
+      siteName: "h1bdata.fyi",
+      type: "website",
+    },
+    twitter: {
+      card: "summary",
+      title: ogTitle,
+      description: ogDescription,
     },
   };
 }
@@ -276,6 +365,7 @@ export default async function Page({
   if (raw !== stateLower) redirect(`/salary/${stateLower}`);
 
   const stateUpper = toUpperState(stateLower);
+  const stateName = getStateName(stateUpper);
 
   const { summary, cities, employers, jobs } = await getStateHubData(stateUpper, TOP_N);
   if (!summary) notFound();
@@ -287,8 +377,24 @@ export default async function Page({
   const topEmployer = employers?.[0]?.employer_name;
   const topJob = jobs?.[0]?.job_title;
 
+  // Breadcrumb JSON-LD (helps Google understand site hierarchy)
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: SITE_URL },
+      { "@type": "ListItem", position: 2, name: "Salary by State", item: `${SITE_URL}/salary` },
+      { "@type": "ListItem", position: 3, name: `${stateName} (${stateUpper})`, item: `${SITE_URL}/salary/${stateLower}` },
+    ],
+  };
+
   return (
     <main style={{ maxWidth: 1160, margin: "0 auto", padding: "26px 16px" }}>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }}
+      />
+
       <header style={{ marginBottom: 18 }}>
         <div style={{ marginBottom: 10 }}>
           <Link href="/salary" style={{ textDecoration: "none" }}>
@@ -299,8 +405,9 @@ export default async function Page({
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <h1 style={{ fontSize: 28, fontWeight: 750, margin: "0 0 8px 0" }}>
-              H-1B LCA Wages in {stateUpper}
+              {stateName} H-1B Salary Data (LCA) <span style={{ opacity: 0.8 }}>({stateUpper})</span>
             </h1>
+
             <p style={{ margin: 0, lineHeight: 1.6 }}>
               Total cases: <strong>{formatInt(summary.total_cases)}</strong>
               {summary.latest_year ? (
@@ -311,9 +418,10 @@ export default async function Page({
               ) : null}{" "}
               · Updated: <strong>{formatDate(summary.refreshed_at)}</strong>
             </p>
+
             <p style={{ margin: "10px 0 0 0", lineHeight: 1.6 }}>
               <Link href={`/?state=${encodeURIComponent(stateUpper)}`}>
-                Search all records in {stateUpper} →
+                Search all records in {stateName} →
               </Link>
             </p>
           </div>
@@ -356,19 +464,18 @@ export default async function Page({
         }}
       >
         <h2 style={{ fontSize: 16, fontWeight: 800, margin: "0 0 8px 0" }}>
-          {stateUpper} wage snapshot
+          {stateName} wage snapshot
         </h2>
 
         <p style={{ margin: 0 }}>
           {summary.latest_year ? (
             <>
-              In <strong>{stateUpper}</strong>, the <strong>median annual wage</strong> in{" "}
+              In <strong>{stateName}</strong>, the <strong>median annual wage</strong> in{" "}
               <strong>{summary.latest_year}</strong> was <strong>{formatUSD(summary.wage_p50)}</strong>
               {asNumber(summary.wage_n_latest_year) > 0 ? (
                 <>
                   {" "}
-                  based on <strong>{formatInt(summary.wage_n_latest_year)}</strong> wage observations (wage_annual &gt;
-                  0)
+                  based on <strong>{formatInt(summary.wage_n_latest_year)}</strong> wage observations (wage_annual &gt; 0)
                 </>
               ) : null}
               . The middle 50% of wages ranged from <strong>{formatUSD(summary.wage_p25)}</strong> (P25) to{" "}
@@ -377,7 +484,7 @@ export default async function Page({
             </>
           ) : (
             <>
-              In <strong>{stateUpper}</strong>, this page summarizes public H-1B LCA wage disclosure records.
+              In <strong>{stateName}</strong>, this page summarizes public H-1B LCA wage disclosure records.
             </>
           )}
         </p>
@@ -390,7 +497,7 @@ export default async function Page({
         <ul style={{ margin: "10px 0 0 18px", padding: 0 }}>
           <li>
             <Link href={`/?state=${encodeURIComponent(stateUpper)}`} style={{ fontWeight: 700 }}>
-              Search all records in {stateUpper}
+              Search all records in {stateName}
             </Link>
           </li>
 
@@ -440,7 +547,7 @@ export default async function Page({
             {yearSeries.length ? (
               <BarChartSVG
                 data={yearSeries.map((p) => ({ x: String(p.year), y: p.total_cases }))}
-                ariaLabel={`Cases by year for ${stateUpper}`}
+                ariaLabel={`Cases by year for ${stateName} (${stateUpper})`}
               />
             ) : (
               <EmptyHint text="No year-series data available (check that your materialized views are refreshed)." />
@@ -449,7 +556,7 @@ export default async function Page({
 
           <Card title="Median wage by year" subtitle="Median (P50) with P25–P75 band (wage_annual > 0)">
             {yearSeries.length ? (
-              <WageBandChartSVG data={yearSeries} ariaLabel={`Median wage by year for ${stateUpper}`} />
+              <WageBandChartSVG data={yearSeries} ariaLabel={`Median wage by year for ${stateName} (${stateUpper})`} />
             ) : (
               <EmptyHint text="No year-series data available (check that your materialized views are refreshed)." />
             )}
@@ -473,7 +580,7 @@ export default async function Page({
       {/* Top lists */}
       <section style={{ display: "grid", gridTemplateColumns: "1fr", gap: 18 }}>
         <HubTable
-          title={`Top Cities in ${stateUpper}`}
+          title={`Top Cities in ${stateName} (${stateUpper})`}
           subtitle={`Top ${TOP_N} by case count`}
           columns={[
             {
@@ -493,7 +600,7 @@ export default async function Page({
         />
 
         <HubTable
-          title={`Top Employers in ${stateUpper}`}
+          title={`Top Employers in ${stateName} (${stateUpper})`}
           subtitle={`Top ${TOP_N} by case count`}
           columns={[
             {
@@ -512,7 +619,7 @@ export default async function Page({
         />
 
         <HubTable
-          title={`Top Job Titles in ${stateUpper}`}
+          title={`Top Job Titles in ${stateName} (${stateUpper})`}
           subtitle={`Top ${TOP_N} by case count`}
           columns={[
             {
