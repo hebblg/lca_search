@@ -8,27 +8,33 @@ type SearchForm = {
   job: string;
   city: string;
   state: string;
-  year: string; // UI kept, but we force 2025 in requests
+  year: string;
 };
 
 const DEFAULT_FORM: SearchForm = {
   employer: "",
   job: "",
   city: "",
-  state: "",
-  year: "2025",
+  state: "all",
+  year: "all",
 };
 
 const LIMIT = 50;
 
-// ✅ Force all searches to 2025
-const FIXED_YEAR = "2025";
+const DEFAULT_YEAR = "all";
 
 // ✅ If no query params, load a small “sample” set for the homepage
 const SAMPLE_LIMIT = 12;
 
-// Year dropdown options: only 2025 (per your requirement)
-const YEAR_OPTIONS: string[] = [FIXED_YEAR];
+const YEAR_OPTIONS: string[] = ["all", "2025", "2024", "2023", "2022", "2021", "2020", "2019"];
+const STATE_OPTIONS: string[] = [
+  "all",
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
+  "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
+  "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+  "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
+  "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC",
+];
 
 type SortKey = "employer" | "job" | "location" | "year" | "wage";
 type SortDir = "asc" | "desc";
@@ -60,8 +66,8 @@ export default function SearchClient() {
       employer: params.get("em") ?? "",
       job: params.get("job") ?? "",
       city: params.get("city") ?? "",
-      state: params.get("state") ?? "",
-      year: FIXED_YEAR, // force
+      state: params.get("state") ?? "all",
+      year: params.get("year") ?? DEFAULT_YEAR,
     };
 
     const initialPage = Number(params.get("page") ?? "0");
@@ -75,15 +81,14 @@ export default function SearchClient() {
       (initial.employer ?? "").trim() !== "" ||
       (initial.job ?? "").trim() !== "" ||
       (initial.city ?? "").trim() !== "" ||
-      (initial.state ?? "").trim() !== "" ||
-      (params.get("year") ?? "").trim() !== ""; // allow existing URLs, but ignored
+      (initial.state ?? "").trim() !== "" && (initial.state ?? "").trim().toLowerCase() !== "all";
 
     if (hasAnyQuery) {
       void runSearch(initial, safePage);
     } else {
       // ✅ Show sample results immediately on homepage
       void runSearch(
-        { ...DEFAULT_FORM, year: FIXED_YEAR },
+        { ...DEFAULT_FORM, year: DEFAULT_YEAR },
         0,
         { limitOverride: SAMPLE_LIMIT, shuffleSample: true, sample: true }
       );
@@ -98,10 +103,8 @@ export default function SearchClient() {
     if (nextApplied.employer) sp.set("em", nextApplied.employer);
     if (nextApplied.job) sp.set("job", nextApplied.job);
     if (nextApplied.city) sp.set("city", nextApplied.city);
-    if (nextApplied.state) sp.set("state", nextApplied.state);
-
-    // keep year in URL for clarity, but it is fixed
-    sp.set("year", FIXED_YEAR);
+    if (nextApplied.state && nextApplied.state !== "all") sp.set("state", nextApplied.state);
+    if (nextApplied.year && nextApplied.year !== "all") sp.set("year", nextApplied.year);
 
     sp.set("page", String(nextPage));
     router.replace(`/search?${sp.toString()}`);
@@ -124,7 +127,7 @@ export default function SearchClient() {
           job: criteria.job,
           city: criteria.city,
           state: criteria.state,
-          year: FIXED_YEAR, // ✅ forced
+          year: criteria.year === "all" ? null : criteria.year,
           page: nextPage,
           limit: opts?.limitOverride ?? LIMIT,
           sample: Boolean(opts?.sample), // ✅ enables server “sample mode”
@@ -178,8 +181,8 @@ export default function SearchClient() {
 
     const nextApplied: SearchForm = {
       ...draft,
-      state: draft.state.trim().toUpperCase(),
-      year: FIXED_YEAR,
+      state: draft.state === "all" ? "all" : draft.state.trim().toUpperCase(),
+      year: draft.year || DEFAULT_YEAR,
     };
     const nextPage = 0;
 
@@ -204,7 +207,7 @@ export default function SearchClient() {
   }
 
   function clearAll() {
-    const cleared: SearchForm = { ...DEFAULT_FORM, year: FIXED_YEAR };
+    const cleared: SearchForm = { ...DEFAULT_FORM, year: DEFAULT_YEAR };
     setDraft(cleared);
     setApplied(cleared);
     setPage(0);
@@ -323,22 +326,23 @@ export default function SearchClient() {
             />
           </div>
 
-          <div className="field">
+          <div className="field stateField">
             <label>State</label>
-            <input
-              value={draft.state}
-              onChange={(e) => onChange("state", e.target.value)}
-              placeholder="CA"
-              maxLength={2}
-            />
+            <select value={draft.state} onChange={(e) => onChange("state", e.target.value)}>
+              {STATE_OPTIONS.map((st) => (
+                <option key={st} value={st}>
+                  {st === "all" ? "All states" : st}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="field yearField">
             <label>Year</label>
-            <select value={FIXED_YEAR} disabled>
+            <select value={draft.year} onChange={(e) => onChange("year", e.target.value)}>
               {YEAR_OPTIONS.map((y) => (
                 <option key={y} value={y}>
-                  {y}
+                  {y === "all" ? "All years" : y}
                 </option>
               ))}
             </select>
@@ -492,7 +496,7 @@ export default function SearchClient() {
             minmax(160px, 220px) /* employer */
             minmax(220px, 1.4fr) /* job */
             minmax(160px, 1fr) /* city */
-            90px /* state */
+            minmax(120px, 150px) /* state */
             minmax(140px, 180px); /* year */
           gap: 10px;
           align-items: end;
@@ -507,6 +511,10 @@ export default function SearchClient() {
 
         .yearField {
           min-width: 140px;
+        }
+
+        .stateField {
+          min-width: 120px;
         }
 
         label {

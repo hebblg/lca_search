@@ -4,7 +4,7 @@ import { pgPool } from "@/lib/pgPool";
 
 export const runtime = "nodejs";
 
-const FIXED_YEAR = 2025;
+const SAMPLE_YEAR = 2025;
 
 // caps
 const LIMIT_MAX = 50;
@@ -12,6 +12,7 @@ const SAMPLE_LIMIT_MAX = 12;
 
 // timeouts (ms)
 const STATEMENT_TIMEOUT_MS = 8000;
+const EMPLOYER_ONLY_TIMEOUT_MS = 15000;
 const SAMPLE_TIMEOUT_MS = 800;
 
 function trimOrNull(v: unknown): string | null {
@@ -52,7 +53,7 @@ LIMIT $2;
 `;
 
 // Main search query (still fast if you have trigram indexes on *_lc columns)
-const SQL_SEARCH_2025 = /* sql */ `
+const SQL_SEARCH = /* sql */ `
 SELECT
   case_number,
   employer_name,
@@ -62,13 +63,28 @@ SELECT
   year,
   wage_annual
 FROM public.lca_cases
-WHERE year = $1
+WHERE ($1::int IS NULL OR year = $1)
   AND ($2::text IS NULL OR worksite_state = $2)
   AND ($3::text IS NULL OR employer_name ILIKE $3)
   AND ($4::text IS NULL OR job_title ILIKE $4)
   AND ($5::text IS NULL OR worksite_city ILIKE $5)
 ORDER BY wage_annual DESC NULLS LAST, case_number ASC
 LIMIT $6 OFFSET $7;
+`;
+
+const SQL_SEARCH_EMPLOYER_FAST = /* sql */ `
+SELECT
+  case_number,
+  employer_name,
+  job_title,
+  worksite_city,
+  worksite_state,
+  year,
+  wage_annual
+FROM public.lca_cases
+WHERE ($1::int IS NULL OR year = $1)
+  AND employer_name ILIKE $2
+LIMIT $3 OFFSET $4;
 `;
 
 export async function POST(req: Request) {
@@ -82,6 +98,9 @@ export async function POST(req: Request) {
 
     const rawState = trimOrNull(body.state);
     const state = rawState ? rawState.toUpperCase() : null;
+    const rawYear = trimOrNull(body.year);
+    const year = rawYear ? asInt(rawYear, NaN) : null;
+    const yearFilter = Number.isFinite(year as number) ? (year as number) : null;
 
     const page = Math.max(0, asInt(body.page, 0));
     const limitReq = asInt(body.limit, LIMIT_MAX);
@@ -101,7 +120,7 @@ export async function POST(req: Request) {
     }
 
     if (state && !isValidState2(state)) {
-      return NextResponse.json({ error: "State must be a 2-letter code (e.g., CA)." }, { status: 400 });
+      // Allow non-2-letter codes for flexibility; skip state filtering instead of erroring.
     }
 
     // If this is the homepage sample load: allow empty filters
@@ -109,7 +128,7 @@ export async function POST(req: Request) {
       await client.query("BEGIN");
       await client.query(`SET LOCAL statement_timeout = '${SAMPLE_TIMEOUT_MS}ms'`);
 
-      const res = await client.query(SQL_SAMPLE_2025, [FIXED_YEAR, limit]);
+      const res = await client.query(SQL_SAMPLE_2025, [SAMPLE_YEAR, limit]);
 
       await client.query("COMMIT");
       return NextResponse.json({ rows: res.rows });
@@ -133,18 +152,25 @@ export async function POST(req: Request) {
     const jobLike = rawJob ? `%${rawJob}%` : null;
     const cityLike = rawCity ? `%${rawCity}%` : null;
 
-    await client.query("BEGIN");
-    await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
+    const stateFilter = state && isValidState2(state) ? state : null;
+    const employerOnly = Boolean(employerLike) && !jobLike && !cityLike && !stateFilter;
 
-    const res = await client.query(SQL_SEARCH_2025, [
-      FIXED_YEAR,
-      state,
-      employerLike,
-      jobLike,
-      cityLike,
-      limit,
-      offset,
-    ]);
+    await client.query("BEGIN");
+    await client.query(
+      `SET LOCAL statement_timeout = '${employerOnly ? EMPLOYER_ONLY_TIMEOUT_MS : STATEMENT_TIMEOUT_MS}ms'`
+    );
+
+    const res = employerOnly
+      ? await client.query(SQL_SEARCH_EMPLOYER_FAST, [yearFilter, employerLike, limit, offset])
+      : await client.query(SQL_SEARCH, [
+          yearFilter,
+          stateFilter,
+          employerLike,
+          jobLike,
+          cityLike,
+          limit,
+          offset,
+        ]);
 
     await client.query("COMMIT");
     return NextResponse.json({ rows: res.rows });
