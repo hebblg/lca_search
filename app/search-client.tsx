@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 type SearchForm = {
   employer: string;
@@ -36,6 +36,7 @@ type SortDir = "asc" | "desc";
 export default function SearchClient() {
   const router = useRouter();
   const params = useSearchParams();
+  const pathname = usePathname();
 
   const [draft, setDraft] = useState<SearchForm>(DEFAULT_FORM);
   const [applied, setApplied] = useState<SearchForm>(DEFAULT_FORM);
@@ -103,7 +104,7 @@ export default function SearchClient() {
     sp.set("year", FIXED_YEAR);
 
     sp.set("page", String(nextPage));
-    router.replace(`/?${sp.toString()}`);
+    router.replace(`/search?${sp.toString()}`);
   }
 
   async function runSearch(
@@ -209,7 +210,8 @@ export default function SearchClient() {
     setPage(0);
     setRows([]);
     setErrorMsg("");
-    router.replace("/");
+    const nextPath = pathname === "/search" ? "/search" : "/";
+    router.replace(nextPath);
 
     // show sample results again after clearing
     void runSearch(cleared, 0, { limitOverride: SAMPLE_LIMIT, shuffleSample: true, sample: true });

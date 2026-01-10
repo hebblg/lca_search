@@ -6,6 +6,11 @@ export const runtime = "nodejs";
 export const revalidate = 86400; // regenerate daily
 
 const INDEX_MIN_CASES = 500;
+const STATE_EMPLOYER_MIN_CASES = 100;
+const STATE_JOB_MIN_CASES = 100;
+const STATE_ENTITY_RANK_MAX = 30;
+const STATE_CITY_MIN_CASES = 100;
+const STATE_CITY_RANK_MAX = 30;
 
 function getBaseUrl() {
   const canonical = process.env.NEXT_PUBLIC_SITE_URL;
@@ -40,6 +45,11 @@ type StateRow = {
   refreshed_at: string | Date | null;
 };
 
+type StateSlugRow = {
+  state: string;
+  slug: string;
+};
+
 async function getIndexableStatesFromDb(): Promise<StateRow[]> {
   // Uses your MV design. Make sure the MV is refreshed; otherwise it will return 0 rows.
   const sql = /* sql */ `
@@ -53,6 +63,63 @@ async function getIndexableStatesFromDb(): Promise<StateRow[]> {
   const res = await pgPool.query<StateRow>(sql, [INDEX_MIN_CASES]);
   return res.rows
     .filter((r) => typeof r.state === "string" && /^[a-z]{2}$/.test(r.state));
+}
+
+async function getStateEmployerSlugs(): Promise<StateSlugRow[]> {
+  const sql = /* sql */ `
+    SELECT
+      lower(state) AS state,
+      regexp_replace(regexp_replace(lower(employer_name), '[^a-z0-9]+', '-', 'g'), '(^-|-$)', '', 'g') AS slug
+    FROM agg.lca_state_top_employers_mv
+    WHERE case_count >= $1 AND rnk <= $2
+    ORDER BY state ASC, rnk ASC;
+  `;
+  const res = await pgPool.query<StateSlugRow>(sql, [STATE_EMPLOYER_MIN_CASES, STATE_ENTITY_RANK_MAX]);
+  return res.rows.filter(
+    (r) =>
+      typeof r.state === "string" &&
+      /^[a-z]{2}$/.test(r.state) &&
+      typeof r.slug === "string" &&
+      r.slug.length > 0
+  );
+}
+
+async function getStateJobSlugs(): Promise<StateSlugRow[]> {
+  const sql = /* sql */ `
+    SELECT
+      lower(state) AS state,
+      regexp_replace(regexp_replace(lower(job_title), '[^a-z0-9]+', '-', 'g'), '(^-|-$)', '', 'g') AS slug
+    FROM agg.lca_state_top_jobs_mv
+    WHERE case_count >= $1 AND rnk <= $2
+    ORDER BY state ASC, rnk ASC;
+  `;
+  const res = await pgPool.query<StateSlugRow>(sql, [STATE_JOB_MIN_CASES, STATE_ENTITY_RANK_MAX]);
+  return res.rows.filter(
+    (r) =>
+      typeof r.state === "string" &&
+      /^[a-z]{2}$/.test(r.state) &&
+      typeof r.slug === "string" &&
+      r.slug.length > 0
+  );
+}
+
+async function getStateCitySlugs(): Promise<StateSlugRow[]> {
+  const sql = /* sql */ `
+    SELECT
+      lower(state) AS state,
+      regexp_replace(regexp_replace(lower(COALESCE(NULLIF(TRIM(city), ''), 'Unknown')), '[^a-z0-9]+', '-', 'g'), '(^-|-$)', '', 'g') AS slug
+    FROM agg.lca_state_top_cities_mv
+    WHERE case_count >= $1 AND rnk <= $2
+    ORDER BY state ASC, rnk ASC;
+  `;
+  const res = await pgPool.query<StateSlugRow>(sql, [STATE_CITY_MIN_CASES, STATE_CITY_RANK_MAX]);
+  return res.rows.filter(
+    (r) =>
+      typeof r.state === "string" &&
+      /^[a-z]{2}$/.test(r.state) &&
+      typeof r.slug === "string" &&
+      r.slug.length > 0
+  );
 }
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
@@ -91,5 +158,48 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
           priority: 0.5,
         }));
 
-  return [...staticEntries, ...stateEntries];
+  // 3) Employer + job pages (top slugs only)
+  let stateEmployerSlugs: StateSlugRow[] = [];
+  let stateJobSlugs: StateSlugRow[] = [];
+  let stateCitySlugs: StateSlugRow[] = [];
+  try {
+    [stateEmployerSlugs, stateJobSlugs, stateCitySlugs] = await Promise.all([
+      getStateEmployerSlugs(),
+      getStateJobSlugs(),
+      getStateCitySlugs(),
+    ]);
+  } catch {
+    stateEmployerSlugs = [];
+    stateJobSlugs = [];
+    stateCitySlugs = [];
+  }
+
+  const stateEmployerEntries: MetadataRoute.Sitemap = stateEmployerSlugs.map((r) => ({
+    url: `${baseUrl}/salary/${r.state}/employer/${r.slug}`,
+    lastModified: now,
+    changeFrequency: "weekly",
+    priority: 0.65,
+  }));
+
+  const stateJobEntries: MetadataRoute.Sitemap = stateJobSlugs.map((r) => ({
+    url: `${baseUrl}/salary/${r.state}/job/${r.slug}`,
+    lastModified: now,
+    changeFrequency: "weekly",
+    priority: 0.65,
+  }));
+
+  const stateCityEntries: MetadataRoute.Sitemap = stateCitySlugs.map((r) => ({
+    url: `${baseUrl}/salary/${r.state}/city/${r.slug}`,
+    lastModified: now,
+    changeFrequency: "weekly",
+    priority: 0.65,
+  }));
+
+  return [
+    ...staticEntries,
+    ...stateEntries,
+    ...stateEmployerEntries,
+    ...stateJobEntries,
+    ...stateCityEntries,
+  ];
 }

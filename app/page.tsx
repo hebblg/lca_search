@@ -1,4 +1,5 @@
 // app/page.tsx
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { unstable_cache } from "next/cache";
@@ -10,6 +11,7 @@ export const revalidate = 86400;
 
 const INDEX_MIN_CASES = 500;
 const TOP_STATES_N = 20;
+const NOINDEX_QUERY_KEYS = ["year", "state", "em"] as const;
 
 type TopStateRow = {
   state: string; // uppercase in MV
@@ -39,6 +41,7 @@ function formatUSD(v: unknown) {
   });
 }
 
+
 const SQL_TOP_STATES = /* sql */ `
 select
   state,
@@ -62,6 +65,28 @@ const getTopStates = unstable_cache(
   ["home-top-states-v1"],
   { revalidate: 86400 }
 );
+
+export async function generateMetadata({
+  searchParams,
+}: {
+  searchParams: Record<string, string | string[] | undefined>;
+}): Promise<Metadata> {
+  const hasQueryParams = NOINDEX_QUERY_KEYS.some((key) =>
+    Object.prototype.hasOwnProperty.call(searchParams, key)
+  );
+
+  if (!hasQueryParams) return {};
+
+  return {
+    alternates: {
+      canonical: "/",
+    },
+    robots: {
+      index: false,
+      follow: true,
+    },
+  };
+}
 
 export default async function Page() {
   const topStates = await getTopStates();
@@ -148,6 +173,7 @@ export default async function Page() {
           </div>
         </div>
       </section>
+
     </div>
   );
 }

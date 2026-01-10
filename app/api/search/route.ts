@@ -11,7 +11,7 @@ const LIMIT_MAX = 50;
 const SAMPLE_LIMIT_MAX = 12;
 
 // timeouts (ms)
-const STATEMENT_TIMEOUT_MS = 2000;
+const STATEMENT_TIMEOUT_MS = 8000;
 const SAMPLE_TIMEOUT_MS = 800;
 
 function trimOrNull(v: unknown): string | null {
@@ -155,6 +155,12 @@ export async function POST(req: Request) {
       // ignore
     }
     const msg = e?.message ?? "Server error";
+    if (typeof msg === "string" && msg.toLowerCase().includes("statement timeout")) {
+      return NextResponse.json(
+        { error: "Search timed out. Try a narrower filter (shorter employer/city/job or add state)." },
+        { status: 504 }
+      );
+    }
     return NextResponse.json({ error: msg }, { status: 500 });
   } finally {
     client.release();

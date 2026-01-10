@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
 import { pgPool } from "@/lib/pgPool";
+import StateTable from "@/components/StateTable";
 
 export const runtime = "nodejs";
 export const revalidate = 86400;
@@ -350,61 +351,7 @@ export default async function SalaryHubPage() {
           </div>
         </div>
 
-        <div style={{ overflowX: "auto", marginTop: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                {["State", "Total cases", "Latest year", "Median wage (latest)", "P25–P75 (latest)", "Search"].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      style={{
-                        textAlign: "left",
-                        fontSize: 13,
-                        padding: "10px 8px",
-                        borderBottom: "1px solid rgba(0,0,0,0.12)",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {h}
-                    </th>
-                  )
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const stLower = r.state.toLowerCase();
-                const name = getStateName(r.state);
-                return (
-                  <tr key={r.state}>
-                    <td style={td}>
-                      <Link href={`/salary/${stLower}`} style={{ textDecoration: "none" }}>
-                        <strong>{name}</strong> <span style={{ opacity: 0.75 }}>({r.state})</span>
-                      </Link>
-                    </td>
-                    <td style={td}>{formatInt(r.total_cases)}</td>
-                    <td style={td}>{r.latest_year ?? "—"}</td>
-                    <td style={td}>{formatUSD(r.wage_p50)}</td>
-                    <td style={td}>
-                      {formatUSD(r.wage_p25)} – {formatUSD(r.wage_p75)}
-                    </td>
-                    <td style={td}>
-                      <Link href={`/?state=${encodeURIComponent(r.state)}`}>Search</Link>
-                    </td>
-                  </tr>
-                );
-              })}
-              {rows.length === 0 ? (
-                <tr>
-                  <td style={td} colSpan={6}>
-                    No states returned. Confirm your materialized views are refreshed and contain data.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+        <StateTable rows={rows} />
       </section>
 
       <footer style={{ marginTop: 22, fontSize: 13, opacity: 0.85 }}>
@@ -416,9 +363,3 @@ export default async function SalaryHubPage() {
     </main>
   );
 }
-
-const td: React.CSSProperties = {
-  padding: "10px 8px",
-  borderBottom: "1px solid rgba(0,0,0,0.06)",
-  verticalAlign: "top",
-};

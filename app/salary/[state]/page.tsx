@@ -3,8 +3,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
-import type { ReactNode } from "react";
 import { pgPool } from "@/lib/pgPool";
+import { CitiesTable, EmployersTable, JobsTable } from "@/components/StateHubTables";
 
 export const runtime = "nodejs";
 export const revalidate = 86400;
@@ -102,6 +102,14 @@ function titleCaseSimple(s: string) {
     .join(" ");
 }
 
+function slugify(s: string) {
+  return String(s ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .trim();
+}
+
 
 
 function asNumber(v: unknown): number {
@@ -147,7 +155,19 @@ function buildSearchHref(params: Record<string, string | number | null | undefin
     if (!s) continue;
     usp.set(k, s);
   }
-  return `/?${usp.toString()}`;
+  return `/search?${usp.toString()}`;
+}
+
+function buildCityHref(stateLower: string, city: string) {
+  return `/salary/${stateLower}/city/${slugify(city)}`;
+}
+
+function buildEmployerHref(stateLower: string, employer: string) {
+  return `/salary/${stateLower}/employer/${slugify(employer)}`;
+}
+
+function buildJobHref(stateLower: string, job: string) {
+  return `/salary/${stateLower}/job/${slugify(job)}`;
 }
 
 function safeJsonArray(v: unknown): any[] {
@@ -250,6 +270,7 @@ const SQL_TOP_EMPLOYERS = /* sql */ `
 SELECT
   COALESCE(NULLIF(TRIM(employer_name), ''), 'Unknown') AS employer_name,
   case_count::bigint AS case_count,
+  median_wage::numeric AS median_wage,
   rnk::int           AS rnk
 FROM agg.lca_state_top_employers_mv
 WHERE state = $1
@@ -261,6 +282,7 @@ const SQL_TOP_JOBS = /* sql */ `
 SELECT
   COALESCE(NULLIF(TRIM(job_title), ''), 'Unknown') AS job_title,
   case_count::bigint AS case_count,
+  median_wage::numeric AS median_wage,
   rnk::int           AS rnk
 FROM agg.lca_state_top_jobs_mv
 WHERE state = $1
@@ -292,12 +314,14 @@ type CityRow = {
 type EmployerRow = {
   employer_name: string;
   case_count: string | number;
+  median_wage: string | number | null;
   rnk: number;
 };
 
 type JobRow = {
   job_title: string;
   case_count: string | number;
+  median_wage: string | number | null;
   rnk: number;
 };
 
@@ -317,7 +341,7 @@ const getStateHubData = unstable_cache(
       jobs: jobsRes.rows,
     };
   },
-  ["state-hub-v5"],
+  ["state-hub-v6"],
   { revalidate: 86400 }
 );
 
@@ -535,23 +559,21 @@ export default async function Page({
           {topCity ? (
             <li>
               Top city:{" "}
-              <Link href={buildSearchHref({ state: stateUpper, city: String(topCity) })}>{String(topCity)}</Link>
+              <Link href={buildCityHref(stateLower, String(topCity))}>{String(topCity)}</Link>
             </li>
           ) : null}
 
           {topEmployer ? (
             <li>
               Top employer:{" "}
-              <Link href={buildSearchHref({ state: stateUpper, em: String(topEmployer) })}>
-                {String(topEmployer)}
-              </Link>
+              <Link href={buildEmployerHref(stateLower, String(topEmployer))}>{String(topEmployer)}</Link>
             </li>
           ) : null}
 
           {topJob ? (
             <li>
               Top job title:{" "}
-              <Link href={buildSearchHref({ state: stateUpper, job: String(topJob) })}>{titleCaseSimple(String(topJob))}</Link>
+              <Link href={buildJobHref(stateLower, String(topJob))}>{titleCaseSimple(String(topJob))}</Link>
             </li>
           ) : null}
 
@@ -606,56 +628,25 @@ export default async function Page({
 
       {/* Top lists (✅ fixed: correct rows per table) */}
       <section style={{ display: "grid", gridTemplateColumns: "1fr", gap: 18 }}>
-        <HubTable
+        <CitiesTable
+          stateLower={stateLower}
+          rows={cities}
           title={`Top Cities in ${stateName}`}
           subtitle={`Top ${TOP_N} by case count`}
-          columns={[
-            {
-              key: "city",
-              label: "City",
-              renderCell: (v: any) => (
-                <Link href={buildSearchHref({ state: stateUpper, city: String(v) })}>{String(v)}</Link>
-              ),
-            },
-            { key: "case_count", label: "Cases", renderCell: (v: any) => formatInt(v) },
-            { key: "median_wage", label: "Median wage", renderCell: (v: any) => formatUSD(v) },
-          ]}
-          rows={cities}
-          emptyText="No city data available."
         />
 
-        <HubTable
+        <EmployersTable
+          stateLower={stateLower}
+          rows={employers}
           title={`Top Employers in ${stateName}`}
           subtitle={`Top ${TOP_N} by case count`}
-          columns={[
-            {
-              key: "employer_name",
-              label: "Employer",
-              renderCell: (v: any) => (
-                <Link href={buildSearchHref({ state: stateUpper, em: String(v) })}>{String(v)}</Link>
-              ),
-            },
-            { key: "case_count", label: "Cases", renderCell: (v: any) => formatInt(v) },
-          ]}
-          rows={employers}
-          emptyText="No employer data available."
         />
 
-        <HubTable
+        <JobsTable
+          stateLower={stateLower}
+          rows={jobs}
           title={`Top Job Titles in ${stateName}`}
           subtitle={`Top ${TOP_N} by case count`}
-          columns={[
-            {
-              key: "job_title",
-              label: "Job title",
-              renderCell: (v: any) => (
-                <Link href={buildSearchHref({ state: stateUpper, job: String(v) })}>{String(v)}</Link>
-              ),
-            },
-            { key: "case_count", label: "Cases", renderCell: (v: any) => formatInt(v) },
-          ]}
-          rows={jobs}
-          emptyText="No job title data available."
         />
       </section>
 
@@ -770,9 +761,10 @@ function BarChartSVG({
 }) {
   const W = 520;
   const H = 210;
-  const pad = { l: 34, r: 12, t: 10, b: 28 };
+  const pad = { l: 52, r: 12, t: 10, b: 28 };
 
   const maxY = Math.max(1, ...data.map((d) => d.y));
+  const yTicks = [maxY, Math.round(maxY / 2), 0];
   const innerW = W - pad.l - pad.r;
   const innerH = H - pad.t - pad.b;
 
@@ -801,6 +793,15 @@ function BarChartSVG({
             />
             <text
               x={pad.l + i * barW + barW / 2}
+              y={Math.max(pad.t + 12, y0 - 6)}
+              textAnchor="middle"
+              fontSize="11"
+              fill="rgba(0,0,0,0.8)"
+            >
+              {formatInt(d.y)}
+            </text>
+            <text
+              x={pad.l + i * barW + barW / 2}
               y={H - 10}
               textAnchor="middle"
               fontSize="11"
@@ -812,9 +813,17 @@ function BarChartSVG({
         );
       })}
 
-      <text x={pad.l} y={pad.t + 10} fontSize="11" fill="rgba(0,0,0,0.7)" textAnchor="start">
-        {formatInt(maxY)}
-      </text>
+      {yTicks.map((v, i) => {
+        const y = scaleY(v);
+        return (
+          <g key={`y-${i}`}>
+            <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="rgba(0,0,0,0.08)" />
+            <text x={pad.l - 6} y={y + 4} fontSize="11" fill="rgba(0,0,0,0.7)" textAnchor="end">
+              {formatInt(v)}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -828,7 +837,7 @@ function WageBandChartSVG({
 }) {
   const W = 520;
   const H = 210;
-  const pad = { l: 46, r: 12, t: 10, b: 28 };
+  const pad = { l: 64, r: 28, t: 18, b: 28 };
 
   const years = data.map((d) => d.year);
   const minYear = Math.min(...years);
@@ -840,6 +849,7 @@ function WageBandChartSVG({
 
   const yMin = Math.max(0, minW * 0.9);
   const yMax = Math.max(yMin + 1, maxW * 1.1);
+  const yMid = (yMin + yMax) / 2;
 
   const innerW = W - pad.l - pad.r;
   const innerH = H - pad.t - pad.b;
@@ -874,26 +884,67 @@ function WageBandChartSVG({
       <line x1={pad.l} y1={pad.t} x2={pad.l} y2={H - pad.b} stroke="rgba(0,0,0,0.25)" />
       <line x1={pad.l} y1={H - pad.b} x2={W - pad.r} y2={H - pad.b} stroke="rgba(0,0,0,0.25)" />
 
-      <text x={pad.l - 6} y={pad.t + 10} textAnchor="end" fontSize="11" fill="rgba(0,0,0,0.75)">
-        {formatUSD(yMax)}
-      </text>
-      <text x={pad.l - 6} y={H - pad.b} textAnchor="end" fontSize="11" fill="rgba(0,0,0,0.75)">
-        {formatUSD(yMin)}
-      </text>
+      {[yMax, yMid, yMin].map((v, i) => {
+        const y = yScale(v);
+        return (
+          <g key={`y-${i}`}>
+            <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="rgba(0,0,0,0.08)" />
+            <text x={pad.l - 6} y={y + 4} textAnchor="end" fontSize="11" fill="rgba(0,0,0,0.75)">
+              {formatUSD(v)}
+            </text>
+          </g>
+        );
+      })}
 
-      <text x={pad.l} y={H - 10} textAnchor="start" fontSize="11" fill="rgba(0,0,0,0.75)">
-        {minYear}
-      </text>
-      <text x={W - pad.r} y={H - 10} textAnchor="end" fontSize="11" fill="rgba(0,0,0,0.75)">
-        {maxYear}
-      </text>
+      {data.map((d) => {
+        const x = xScale(d.year);
+        return (
+          <text
+            key={`x-${d.year}`}
+            x={x}
+            y={H - 10}
+            textAnchor="middle"
+            fontSize="11"
+            fill="rgba(0,0,0,0.75)"
+          >
+            {d.year}
+          </text>
+        );
+      })}
 
       <path d={bandPath()} fill="rgba(0,0,0,0.10)" stroke="none" />
       <path d={linePath(p50)} fill="none" stroke="rgba(0,0,0,0.65)" strokeWidth="2" />
 
-      {p50.map(([x, y], i) => (
-        <circle key={i} cx={x} cy={y} r="2.6" fill="rgba(0,0,0,0.65)" />
-      ))}
+      {p50.map(([x, y], i) => {
+        const label = formatUSD(data[i]?.wage_p50);
+        const tier = i % 3;
+        const aboveY = y - 10 - tier * 8;
+        const belowY = y + 12 + tier * 8;
+        const labelY = aboveY < pad.t + 10 ? belowY : aboveY;
+        const clampedY = Math.min(H - pad.b - 6, Math.max(pad.t + 10, labelY));
+        const isFirst = i === 0;
+        const isLast = i === p50.length - 1;
+        const rawX = isFirst ? x + 6 : isLast ? x - 6 : x;
+        const clampedX = Math.max(pad.l + 4, Math.min(W - pad.r - 4, rawX));
+        const anchor = isFirst ? "start" : isLast ? "end" : "middle";
+        return (
+          <g key={i}>
+            <circle cx={x} cy={y} r="2.6" fill="rgba(0,0,0,0.65)" />
+            <text
+              x={clampedX}
+              y={clampedY}
+              textAnchor={anchor}
+              fontSize="10.5"
+              fill="rgba(0,0,0,0.9)"
+              stroke="rgba(255,255,255,0.9)"
+              strokeWidth="3"
+              paintOrder="stroke"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -901,79 +952,3 @@ function WageBandChartSVG({
 /* --------------------------
    Tables
 -------------------------- */
-
-function HubTable<T extends Record<string, any>>({
-  title,
-  subtitle,
-  columns,
-  rows,
-  emptyText,
-}: {
-  title: string;
-  subtitle?: string;
-  columns: Array<{
-    key: keyof T;
-    label: string;
-    renderCell?: (value: any, row: T) => ReactNode;
-  }>;
-  rows: T[];
-  emptyText: string;
-}) {
-  return (
-    <section style={{ border: "1px solid rgba(0,0,0,0.1)", borderRadius: 12, padding: 16 }}>
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 750 }}>{title}</div>
-        {subtitle ? <div style={{ fontSize: 12.5, opacity: 0.8, marginTop: 3 }}>{subtitle}</div> : null}
-      </div>
-
-      {rows.length === 0 ? (
-        <p style={{ margin: 0 }}>{emptyText}</p>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                {columns.map((c) => (
-                  <th
-                    key={String(c.key)}
-                    style={{
-                      textAlign: "left",
-                      fontSize: 13,
-                      padding: "10px 8px",
-                      borderBottom: "1px solid rgba(0,0,0,0.12)",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {c.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, idx) => (
-                <tr key={idx}>
-                  {columns.map((c) => {
-                    const raw = r[c.key as string];
-                    const cell = c.renderCell ? c.renderCell(raw, r) : raw ?? "—";
-                    return (
-                      <td
-                        key={String(c.key)}
-                        style={{
-                          padding: "10px 8px",
-                          borderBottom: "1px solid rgba(0,0,0,0.06)",
-                          verticalAlign: "top",
-                        }}
-                      >
-                        {cell}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  );
-}
