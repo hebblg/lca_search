@@ -247,25 +247,6 @@ const getJobStateData = unstable_cache(
   { revalidate: 86400 }
 );
 
-export async function generateStaticParams() {
-  const sql = /* sql */ `
-    SELECT
-      lower(state) AS state,
-      regexp_replace(regexp_replace(lower(job_title), '[^a-z0-9]+', '-', 'g'), '(^-|-$)', '', 'g') AS slug
-    FROM agg.lca_state_top_jobs_mv
-    WHERE case_count >= $1 AND rnk <= $2
-    ORDER BY state ASC, rnk ASC;
-  `;
-  const res = await pgPool.query<{ state: string; slug: string }>(sql, [
-    STATIC_MIN_CASES,
-    STATIC_RANK_MAX,
-  ]);
-
-  return res.rows
-    .filter((r) => /^[a-z]{2}$/.test(r.state) && typeof r.slug === "string" && r.slug.length > 0)
-    .map((r) => ({ state: r.state, slug: r.slug }));
-}
-
 export async function generateMetadata({
   params,
 }: {
