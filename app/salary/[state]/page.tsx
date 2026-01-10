@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
+import type { ReactNode } from "react";
 import { pgPool } from "@/lib/pgPool";
 import { CitiesTable, EmployersTable, JobsTable } from "@/components/StateHubTables";
 
